@@ -17,9 +17,11 @@ temp/
 
 # Dependency and build outputs
 node_modules/
+.npm-cache/
 dist/
 build/
 coverage/
+*.tgz
 
 # Environment files
 .env
