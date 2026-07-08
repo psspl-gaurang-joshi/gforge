@@ -1,4 +1,4 @@
-export function createVerificationReport(environment) {
+export function createVerificationReport(environment, managedHooksReport = null) {
   const checks = [
     {
       status: environment.platform.supported ? "PASS" : "FAIL",
@@ -22,9 +22,11 @@ export function createVerificationReport(environment) {
     }
   ];
 
+  const allChecks = managedHooksReport ? [...checks, ...managedHooksReport.checks] : checks;
+
   return {
-    checks,
-    exitCode: checks.some((check) => check.status === "FAIL") ? 1 : 0
+    checks: allChecks,
+    exitCode: allChecks.some((check) => check.status === "FAIL") ? 1 : 0
   };
 }
 
