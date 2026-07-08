@@ -45,6 +45,31 @@ Initial targets:
 
 Keep documentation short. Prefer updating these files over adding new docs unless a new file is truly needed.
 
+## Installation
+
+Prerequisites:
+
+- Node.js 20 or newer
+- Git
+
+Install globally from this repository:
+
+```bash
+npm install -g git+ssh://git@github.com/psspl-gaurang-joshi/gforge.git
+```
+
+Install from a local clone:
+
+```bash
+npm install -g .
+```
+
+During development, link the local CLI:
+
+```bash
+npm link
+```
+
 ## Development
 
 Run tests with:
@@ -53,16 +78,24 @@ Run tests with:
 npm test
 ```
 
-Run verification with:
+Check package contents with:
 
 ```bash
-node bin/gforge.js verify
+npm run package:check
+```
+
+## Usage
+
+Verify the current workstation state:
+
+```bash
+gforge verify
 ```
 
 Install managed global hooks with:
 
 ```bash
-node bin/gforge.js install
+gforge install
 ```
 
 This creates `~/.gforge/hooks`, installs GForge-managed hooks, and sets global Git `core.hooksPath`.
@@ -70,13 +103,19 @@ This creates `~/.gforge/hooks`, installs GForge-managed hooks, and sets global G
 Update managed hooks with:
 
 ```bash
-node bin/gforge.js update
+gforge update
 ```
 
 Uninstall GForge-owned hooks and restore prior Git hook configuration with:
 
 ```bash
-node bin/gforge.js uninstall
+gforge uninstall
+```
+
+To remove the global npm package after uninstalling hooks:
+
+```bash
+npm uninstall -g @psspl-gaurang-joshi/gforge
 ```
 
 ## License

@@ -12,12 +12,14 @@
     "src",
     "LICENSE",
     "NOTICE",
-    "README.md"
+    "README.md",
+    "SECURITY.md"
   ],
   "engines": {
     "node": ">=20"
   },
   "scripts": {
+    "package:check": "npm pack --dry-run --cache .npm-cache",
     "test": "node --test"
   }
 }
