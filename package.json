@@ -1,0 +1,23 @@
+{
+  "name": "@psspl-gaurang-joshi/gforge",
+  "version": "0.1.0",
+  "description": "Secure global Git hooks installer for developer workstations.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "gforge": "./bin/gforge.js"
+  },
+  "files": [
+    "bin",
+    "src",
+    "LICENSE",
+    "NOTICE",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}
