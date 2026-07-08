@@ -18,13 +18,29 @@ test("prints version", async () => {
 });
 
 test("recognizes planned installer commands as not implemented", async () => {
-  for (const command of ["install", "update", "uninstall"]) {
+  for (const command of ["update", "uninstall"]) {
     const streams = createStreams();
     const result = await runCli([command], streams);
 
     assert.equal(result.exitCode, 2);
     assert.match(streams.stderr.value, new RegExp(`gforge ${command} is not implemented yet`));
   }
+});
+
+test("runs managed hooks install", async () => {
+  const streams = createStreams();
+  const result = await runCli(["install"], streams, {
+    installManagedHooks: async () => ({
+      ok: true,
+      exitCode: 0,
+      hooksDirectory: "/Users/example/.gforge/hooks",
+      messages: ["Installed managed hooks in /Users/example/.gforge/hooks"]
+    })
+  });
+
+  assert.equal(result.exitCode, 0);
+  assert.match(streams.stdout.value, /GForge install complete/);
+  assert.match(streams.stdout.value, /Installed managed hooks/);
 });
 
 test("runs read-only verification", async () => {
@@ -35,12 +51,23 @@ test("runs read-only verification", async () => {
       home: { path: "/Users/example", present: true },
       shell: { path: "/bin/zsh", name: "zsh", supported: true },
       git: { available: true, version: "2.45.0", rawVersion: "git version 2.45.0" }
+    }),
+    verifyManagedHooks: async () => ({
+      hooksDirectory: "/Users/example/.gforge/hooks",
+      checks: [
+        {
+          status: "PASS",
+          label: "hooks-path",
+          detail: "core.hooksPath is /Users/example/.gforge/hooks"
+        }
+      ]
     })
   });
 
   assert.equal(result.exitCode, 0);
   assert.match(streams.stdout.value, /PASS platform: darwin arm64/);
   assert.match(streams.stdout.value, /PASS git: git version 2\.45\.0/);
+  assert.match(streams.stdout.value, /PASS hooks-path:/);
   assert.equal(streams.stderr.value, "");
 });
 
@@ -52,6 +79,10 @@ test("fails verification when git is unavailable", async () => {
       home: { path: "/Users/example", present: true },
       shell: { path: "/bin/zsh", name: "zsh", supported: true },
       git: { available: false, version: null, rawVersion: null, errorCode: "ENOENT" }
+    }),
+    verifyManagedHooks: async () => ({
+      hooksDirectory: "/Users/example/.gforge/hooks",
+      checks: []
     })
   });
 
