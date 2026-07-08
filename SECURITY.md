@@ -2,20 +2,41 @@
 
 ## Supported Versions
 
-Use this section to tell people about which versions of your project are
-currently being supported with security updates.
+GForge is in early development and has no released versions yet.
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 5.1.x   | :white_check_mark: |
-| 5.0.x   | :x:                |
-| 4.0.x   | :white_check_mark: |
-| < 4.0   | :x:                |
+| Unreleased `master` | Yes |
 
 ## Reporting a Vulnerability
 
-Use this section to tell people how to report a vulnerability.
+Report security issues privately by emailing:
 
-Tell them where to go, how often they can expect to get an update on a
-reported vulnerability, what to expect if the vulnerability is accepted or
-declined, etc.
+```text
+Gaurang Joshi <gaurangnil@gmail.com>
+```
+
+Do not open a public issue for vulnerabilities.
+
+Include:
+
+- A clear description of the issue.
+- Steps to reproduce when safe.
+- Affected files, commands, or hook behavior.
+- Any known impact.
+
+Do not include real secrets, tokens, passwords, private keys, or customer data in the report.
+
+## Security Scope
+
+GForge manages global Git hook configuration. Security-sensitive areas include:
+
+- Hook installation and update behavior.
+- Global Git configuration changes.
+- Secret detection logic.
+- Logging output.
+- Uninstall behavior.
+
+## Response Expectations
+
+The maintainer will review valid reports, ask for clarification if needed, and prioritize fixes based on risk and project maturity.
