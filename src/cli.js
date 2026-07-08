@@ -1,8 +1,10 @@
 import { VERSION } from "./metadata.js";
+import { detectEnvironment } from "./environment.js";
+import { createVerificationReport, formatVerificationReport } from "./verify.js";
 
-const PLANNED_COMMANDS = new Set(["install", "verify", "update", "uninstall"]);
+const PLANNED_COMMANDS = new Set(["install", "update", "uninstall"]);
 
-export async function runCli(args, streams) {
+export async function runCli(args, streams, options = {}) {
   const command = args[0] ?? "help";
 
   if (command === "help" || command === "--help" || command === "-h") {
@@ -15,10 +17,16 @@ export async function runCli(args, streams) {
     return { exitCode: 0 };
   }
 
+  if (command === "verify") {
+    const environment = await (options.detectEnvironment ?? detectEnvironment)();
+    const report = createVerificationReport(environment);
+
+    streams.stdout.write(formatVerificationReport(report));
+    return { exitCode: report.exitCode };
+  }
+
   if (PLANNED_COMMANDS.has(command)) {
-    streams.stderr.write(
-      `gforge ${command} is not implemented yet. This task only adds the CLI skeleton.\n`
-    );
+    streams.stderr.write(`gforge ${command} is not implemented yet.\n`);
     return { exitCode: 2 };
   }
 
@@ -36,7 +44,7 @@ Usage:
 
 Commands:
   install     Install managed global Git hooks
-  verify      Verify managed hooks and Git configuration
+  verify      Run read-only environment checks
   update      Update managed hooks
   uninstall   Remove GForge-owned hooks and configuration
   version     Print version
