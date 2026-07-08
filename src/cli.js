@@ -1,9 +1,13 @@
 import { VERSION } from "./metadata.js";
 import { detectEnvironment } from "./environment.js";
-import { formatInstallResult, installManagedHooks, verifyManagedHooks } from "./installer.js";
+import {
+  formatInstallResult,
+  installManagedHooks,
+  uninstallManagedHooks,
+  updateManagedHooks,
+  verifyManagedHooks
+} from "./installer.js";
 import { createVerificationReport, formatVerificationReport } from "./verify.js";
-
-const PLANNED_COMMANDS = new Set(["update", "uninstall"]);
 
 export async function runCli(args, streams, options = {}) {
   const command = args[0] ?? "help";
@@ -31,6 +35,32 @@ export async function runCli(args, streams, options = {}) {
     return { exitCode: result.exitCode };
   }
 
+  if (command === "update") {
+    const result = await (options.updateManagedHooks ?? updateManagedHooks)(options);
+    const output = formatInstallResult(result);
+
+    if (result.ok) {
+      streams.stdout.write(output);
+    } else {
+      streams.stderr.write(output);
+    }
+
+    return { exitCode: result.exitCode };
+  }
+
+  if (command === "uninstall") {
+    const result = await (options.uninstallManagedHooks ?? uninstallManagedHooks)(options);
+    const output = formatInstallResult(result);
+
+    if (result.ok) {
+      streams.stdout.write(output);
+    } else {
+      streams.stderr.write(output);
+    }
+
+    return { exitCode: result.exitCode };
+  }
+
   if (command === "verify") {
     const environment = await (options.detectEnvironment ?? detectEnvironment)();
     const managedHooksReport = await (options.verifyManagedHooks ?? verifyManagedHooks)({
@@ -41,11 +71,6 @@ export async function runCli(args, streams, options = {}) {
 
     streams.stdout.write(formatVerificationReport(report));
     return { exitCode: report.exitCode };
-  }
-
-  if (PLANNED_COMMANDS.has(command)) {
-    streams.stderr.write(`gforge ${command} is not implemented yet.\n`);
-    return { exitCode: 2 };
   }
 
   streams.stderr.write(`Unknown command: ${command}\n\n${helpText()}`);
@@ -67,7 +92,5 @@ Commands:
   uninstall   Remove GForge-owned hooks and configuration
   version     Print version
   help        Print help
-
-Installer commands are planned and will be implemented in follow-up tasks.
 `;
 }

@@ -21,3 +21,15 @@ export async function getGlobalHooksPath(execFileFn = execFileAsync) {
 export async function setGlobalHooksPath(hooksPath, execFileFn = execFileAsync) {
   await execFileFn("git", ["config", "--global", "core.hooksPath", hooksPath]);
 }
+
+export async function unsetGlobalHooksPath(execFileFn = execFileAsync) {
+  try {
+    await execFileFn("git", ["config", "--global", "--unset", "core.hooksPath"]);
+  } catch (error) {
+    if (error?.code === 1 || error?.code === "1" || error?.code === 5 || error?.code === "5") {
+      return;
+    }
+
+    throw error;
+  }
+}
