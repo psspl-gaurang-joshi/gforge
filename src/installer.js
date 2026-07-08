@@ -1,8 +1,8 @@
-import { chmod, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rmdir, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { detectEnvironment } from "./environment.js";
-import { getGlobalHooksPath, setGlobalHooksPath } from "./git-config.js";
+import { getGlobalHooksPath, setGlobalHooksPath, unsetGlobalHooksPath } from "./git-config.js";
 import {
   MANAGED_HOOKS,
   resolveHooksDirectory,
@@ -20,6 +20,7 @@ export async function installManagedHooks(options = {}) {
   if (preflight.length > 0) {
     return {
       ok: false,
+      command: "install",
       exitCode: 1,
       hooksDirectory: null,
       messages: preflight
@@ -39,6 +40,7 @@ export async function installManagedHooks(options = {}) {
 
   return {
     ok: true,
+    command: "install",
     exitCode: 0,
     hooksDirectory,
     managedDirectory,
@@ -46,6 +48,85 @@ export async function installManagedHooks(options = {}) {
       `Installed managed hooks in ${hooksDirectory}`,
       `Configured global core.hooksPath to ${hooksDirectory}`
     ]
+  };
+}
+
+export async function updateManagedHooks(options = {}) {
+  const result = await installManagedHooks(options);
+
+  if (!result.ok) {
+    return {
+      ...result,
+      command: "update"
+    };
+  }
+
+  return {
+    ...result,
+    command: "update",
+    messages: [
+      `Updated managed hooks in ${result.hooksDirectory}`,
+      `Configured global core.hooksPath to ${result.hooksDirectory}`
+    ]
+  };
+}
+
+export async function uninstallManagedHooks(options = {}) {
+  const environment = options.environment ?? (await detectEnvironment(options));
+  const execFileFn = options.execFile;
+  const preflight = validateUninstallPreflight(environment);
+
+  if (preflight.length > 0) {
+    return {
+      ok: false,
+      command: "uninstall",
+      exitCode: 1,
+      hooksDirectory: null,
+      messages: preflight
+    };
+  }
+
+  const homePath = environment.home.path;
+  const managedDirectory = resolveManagedDirectory(homePath);
+  const hooksDirectory = resolveHooksDirectory(homePath);
+  const statePath = resolveStatePath(homePath);
+  const state = await readJsonFile(statePath);
+  const configuredHooksPath = await getGlobalHooksPath(execFileFn);
+  const messages = [];
+
+  if (configuredHooksPath === hooksDirectory) {
+    if (state?.previousCoreHooksPath) {
+      await setGlobalHooksPath(state.previousCoreHooksPath, execFileFn);
+      messages.push(`Restored global core.hooksPath to ${state.previousCoreHooksPath}`);
+    } else {
+      await unsetGlobalHooksPath(execFileFn);
+      messages.push("Removed global core.hooksPath managed by GForge");
+    }
+  } else {
+    messages.push(
+      configuredHooksPath
+        ? `Skipped core.hooksPath restore because it points to ${configuredHooksPath}`
+        : "Skipped core.hooksPath restore because it is not configured"
+    );
+  }
+
+  await removeManagedFiles(hooksDirectory, statePath);
+  const removedHooksDirectory = await removeEmptyDirectory(hooksDirectory);
+  const removedManagedDirectory = await removeEmptyDirectory(managedDirectory);
+
+  messages.push("Removed GForge-owned hook and state files");
+
+  if (!removedHooksDirectory || !removedManagedDirectory) {
+    messages.push("Left non-empty GForge directories in place");
+  }
+
+  return {
+    ok: true,
+    command: "uninstall",
+    exitCode: 0,
+    hooksDirectory,
+    managedDirectory,
+    messages
   };
 }
 
@@ -93,7 +174,8 @@ export async function verifyManagedHooks(options = {}) {
 }
 
 export function formatInstallResult(result) {
-  const header = result.ok ? "GForge install complete" : "GForge install failed";
+  const command = result.command ?? "install";
+  const header = result.ok ? `GForge ${command} complete` : `GForge ${command} failed`;
   return `${[header, "", ...result.messages].join("\n")}\n`;
 }
 
@@ -115,11 +197,60 @@ function validateInstallPreflight(environment) {
   return messages;
 }
 
+function validateUninstallPreflight(environment) {
+  const messages = [];
+
+  if (!environment.home.present) {
+    messages.push("Home directory not detected.");
+  }
+
+  if (!environment.git.available) {
+    messages.push("Git is required but was not found.");
+  }
+
+  return messages;
+}
+
 async function writeManagedHooks(hooksDirectory) {
   for (const [name, content] of MANAGED_HOOKS) {
     const hookPath = join(hooksDirectory, name);
     await writeFile(hookPath, content, { mode: EXECUTABLE_MODE });
     await chmod(hookPath, EXECUTABLE_MODE);
+  }
+}
+
+async function removeManagedFiles(hooksDirectory, statePath) {
+  for (const name of MANAGED_HOOKS.keys()) {
+    await removeFile(join(hooksDirectory, name));
+  }
+
+  await removeFile(statePath);
+}
+
+async function removeFile(filePath) {
+  try {
+    await unlink(filePath);
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      throw error;
+    }
+  }
+}
+
+async function removeEmptyDirectory(directoryPath) {
+  try {
+    await rmdir(directoryPath);
+    return true;
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return true;
+    }
+
+    if (error?.code === "ENOTEMPTY" || error?.code === "EEXIST") {
+      return false;
+    }
+
+    throw error;
   }
 }
 
@@ -144,7 +275,7 @@ async function readJsonFile(filePath) {
   try {
     return JSON.parse(await readFile(filePath, "utf8"));
   } catch (error) {
-    if (error?.code === "ENOENT") {
+    if (error?.code === "ENOENT" || error instanceof SyntaxError) {
       return null;
     }
 

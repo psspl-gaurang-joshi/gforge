@@ -4,7 +4,7 @@ GForge is a small installer for secure global Git hooks on developer workstation
 
 The goal is simple: install, verify, update, and remove a managed global Git hook setup that helps prevent unsafe commits across repositories on a workstation.
 
-Current status: managed hook installation and verification. Update and uninstall are not implemented yet.
+Current status: managed hook install, verify, update, and uninstall.
 
 ## Scope
 
@@ -66,6 +66,18 @@ node bin/gforge.js install
 ```
 
 This creates `~/.gforge/hooks`, installs GForge-managed hooks, and sets global Git `core.hooksPath`.
+
+Update managed hooks with:
+
+```bash
+node bin/gforge.js update
+```
+
+Uninstall GForge-owned hooks and restore prior Git hook configuration with:
+
+```bash
+node bin/gforge.js uninstall
+```
 
 ## License
 
