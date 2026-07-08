@@ -4,7 +4,7 @@ GForge is a small installer for secure global Git hooks on developer workstation
 
 The goal is simple: install, verify, update, and remove a managed global Git hook setup that helps prevent unsafe commits across repositories on a workstation.
 
-Current status: CLI skeleton. Installer behavior is not implemented yet.
+Current status: read-only environment verification. Installer behavior is not implemented yet.
 
 ## Scope
 
@@ -51,6 +51,12 @@ Run tests with:
 
 ```bash
 npm test
+```
+
+Run read-only verification with:
+
+```bash
+node bin/gforge.js verify
 ```
 
 ## License
