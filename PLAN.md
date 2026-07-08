@@ -4,7 +4,7 @@ Current goal: build a minimal installer for secure global Git hooks.
 
 ## MVP
 
-1. Create a small command entry point.
+1. Create a small command entry point. Done.
 2. Detect Git, platform, shell, and home directory.
 3. Create a GForge-owned hooks directory.
 4. Install initial security hooks.
@@ -35,6 +35,6 @@ gforge uninstall
 
 1. Initialize Git for this repository.
 2. Choose implementation stack.
-3. Add project skeleton and tests.
-4. Implement read-only detection.
-5. Implement install/verify for global hooks.
+3. Implement read-only detection.
+4. Implement install/verify for global hooks.
+5. Add update and uninstall behavior.
