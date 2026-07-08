@@ -9,8 +9,8 @@ Current goal: build a minimal installer for secure global Git hooks.
 3. Create a GForge-owned hooks directory. Done.
 4. Install initial security hooks. Done.
 5. Configure global `core.hooksPath`. Done.
-6. Add `verify`, `update`, and `uninstall` commands. Verify done.
-7. Add tests for repeated runs and safe uninstall.
+6. Add `verify`, `update`, and `uninstall` commands. Done.
+7. Add tests for repeated runs and safe uninstall. Done.
 
 ## Suggested Commands
 
@@ -35,6 +35,6 @@ gforge uninstall
 
 1. Initialize Git for this repository.
 2. Choose implementation stack.
-3. Add update and uninstall behavior.
-4. Add packaged installation instructions.
-5. Expand hook coverage after the first safe baseline.
+3. Add packaged installation instructions.
+4. Expand hook coverage after the first safe baseline.
+5. Prepare release validation.
