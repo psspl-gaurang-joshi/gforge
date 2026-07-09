@@ -43,16 +43,50 @@ export const PROVIDER_RULES = [
   { id: "square-token", description: "Square access token", regex: /\b(?:sq0atp-[A-Za-z0-9_-]{22}|EAAA[A-Za-z0-9_-]{60})\b/ },
   { id: "telegram-bot-token", description: "Telegram bot token", regex: /\b[0-9]{8,10}:AA[A-Za-z0-9_-]{33}\b/ },
   { id: "jwt", description: "JSON Web Token", regex: /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/ },
-  { id: "basic-auth-url", description: "Credentials embedded in URL", regex: /\b[a-z][a-z0-9+.-]*:\/\/[^/\s:@]+:[^/\s:@]{3,}@/i },
-  {
-    id: "generic-secret-assignment",
-    description: "Secret-like value assigned to a credential keyword",
-    // A credential keyword (as its own token, e.g. DB_PASS, api-key, secret)
-    // assigned (= or :) to a non-trivial value. Bare references such as
-    // process.env.GITHUB_TOKEN (no assignment) are not matched.
-    regex: /(?:^|[^A-Za-z0-9])(?:passwd|password|passphrase|pwd|pass|secret(?:[_-]?key)?|token|access[_-]?token|auth(?:[_-]?token)?|authorization|bearer|api[_-]?key|apikey|access[_-]?key|client[_-]?secret|private[_-]?key|encryption[_-]?key|signing[_-]?key|session[_-]?key|connection[_-]?string|conn[_-]?str|credentials?)["'`]?\s*[:=]\s*["'`]?[^\s"'`]{4,}/i
-  }
+  { id: "basic-auth-url", description: "Credentials embedded in URL", regex: /\b[a-z][a-z0-9+.-]*:\/\/[^/\s:@]+:[^/\s:@]{3,}@/i }
 ];
+
+// Generic credential-keyword assignment (e.g. DB_PASS=..., password: "..."),
+// handled specially so the assigned VALUE can be classified. A hardcoded literal
+// is flagged, but a reference such as process.env.DB_PASSWORD, a function call,
+// or an interpolation is NOT — blocking well-written config would defeat the
+// purpose and train developers to bypass the hook.
+export const GENERIC_SECRET_RULE_ID = "generic-secret-assignment";
+const GENERIC_SECRET_DESCRIPTION = "hardcoded value assigned to a credential keyword";
+const GENERIC_KEYWORD_RE = /(?:^|[^A-Za-z0-9])(?:passwd|password|passphrase|pwd|pass|secret(?:[_-]?key)?|token|access[_-]?token|auth(?:[_-]?token)?|authorization|bearer|api[_-]?key|apikey|access[_-]?key|client[_-]?secret|private[_-]?key|encryption[_-]?key|signing[_-]?key|session[_-]?key|connection[_-]?string|conn[_-]?str|credentials?)["'`]?\s*[:=]\s*(\S.*)$/i;
+const VALUE_PLACEHOLDER_RE = /^(your|my|the|changeme|change[_-]?me|example|placeholder|redacted|dummy|sample|test|none|null|nil|undefined|true|false|xxx+|x{3,}|\*+|todo|tbd|password|passwd|secret|token|value|string)$/i;
+const VALUE_REFERENCE_ROOT_RE = /^(process|import|globalThis|window|os|System|Deno|ENV|env|config|configService|vault|secret|secrets|settings)$/i;
+
+// Decide whether the value assigned to a credential keyword is a hardcoded
+// literal (flag) rather than a reference/placeholder (ignore).
+export function looksLikeHardcodedSecret(rawValue) {
+  let value = String(rawValue).trim();
+  const quote = value[0];
+  const quoted = quote === '"' || quote === "'" || quote === "`";
+  if (quoted) {
+    const end = value.indexOf(quote, 1);
+    value = end === -1 ? value.slice(1) : value.slice(1, end);
+  } else {
+    value = value.split(/[\s,;)}\]]/)[0];
+  }
+  value = value.trim();
+
+  if (value.length < 4) return false;
+  // Interpolations / template placeholders are references regardless of quoting.
+  if (/\$\{|\{\{|%\(|<%|#\{/.test(value)) return false;
+  if (!quoted) {
+    // Unquoted expressions: shell vars, member access, function calls, env lookups.
+    if (value.startsWith("$")) return false;
+    if (/[.(]/.test(value)) return false;
+    if (VALUE_REFERENCE_ROOT_RE.test(value)) return false;
+  }
+  // Env-name-like placeholders (DB_PASSWORD) and common dummy values.
+  if (/^[A-Z][A-Z0-9_]{2,}$/.test(value)) return false;
+  if (VALUE_PLACEHOLDER_RE.test(value)) return false;
+  if (/^<.*>$/.test(value) || value === "...") return false;
+
+  return true;
+}
 
 // ---------------------------------------------------------------------------
 // Secret-file rules: files that should essentially never be committed. Matched
@@ -184,9 +218,20 @@ export function scanText(filePath, content, options = {}) {
     const lineNumber = i + 1;
 
     for (const rule of PROVIDER_RULES) {
-      if (rule.id === "generic-secret-assignment" && !includeGeneric) continue;
       if (rule.regex.test(line)) {
         findings.push({ file: filePath, line: lineNumber, ruleId: rule.id, description: rule.description });
+      }
+    }
+
+    if (includeGeneric) {
+      const match = line.match(GENERIC_KEYWORD_RE);
+      if (match && looksLikeHardcodedSecret(match[1])) {
+        findings.push({
+          file: filePath,
+          line: lineNumber,
+          ruleId: GENERIC_SECRET_RULE_ID,
+          description: GENERIC_SECRET_DESCRIPTION
+        });
       }
     }
 

@@ -29,6 +29,24 @@ test("detects a variety of hardcoded password/credential assignments", () => {
   assert.ok(ruleIds("a.env", "SESSION_KEY=9f8e7d6c5b4a3210").includes("generic-secret-assignment"));
 });
 
+test("does not flag credential keys wired to env vars / references (well-written config)", () => {
+  // The critical real-world case: Sequelize/config files that read secrets from
+  // the environment must NOT be blocked.
+  assert.equal(ruleIds("config/db.js", "password: process.env.DB_PASSWORD,").length, 0);
+  assert.equal(ruleIds("config/db.js", "password: config.get('db.password'),").length, 0);
+  assert.equal(ruleIds("config/db.js", "password: getSecret('db'),").length, 0);
+  assert.equal(ruleIds("config/db.js", 'password: `${DB_PASSWORD}`,').length, 0);
+  assert.equal(ruleIds("app.py", "password = os.environ['DB_PASSWORD']").length, 0);
+  assert.equal(ruleIds("app.sh", "PASSWORD=$DB_PASSWORD").length, 0);
+  assert.equal(ruleIds("config.json", '"password": "DB_PASSWORD"').length, 0); // env-name placeholder
+  assert.equal(ruleIds(".env.example", "DB_PASSWORD=changeme").length, 0);
+});
+
+test("still flags hardcoded credentials in config files (Sequelize-style)", () => {
+  assert.ok(ruleIds("config/config.json", '"password": "MyS3cretDbPass"').includes("generic-secret-assignment"));
+  assert.ok(ruleIds("config/db.js", "password: 'MyS3cretDbPass',").includes("generic-secret-assignment"));
+});
+
 test("detects provider tokens and private keys", () => {
   assert.ok(ruleIds("a", `ghp_${"a".repeat(36)}`).includes("github-pat"));
   assert.ok(ruleIds("a", "AKIAIOSFODNN7EXAMPLE").includes("aws-access-key-id"));
