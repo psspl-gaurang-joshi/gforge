@@ -20,7 +20,9 @@ export function getScannerContent() {
 // lacks nvm's node; the install-time interpreter path is baked in as a fallback.
 // Fails closed (blocks the commit) if no Node runtime can be found.
 export function buildPreCommitHook(nodePath) {
-  const fallback = String(nodePath ?? "").replace(/"/g, '\\"');
+  const raw = String(nodePath ?? "");
+  const fwd = raw.replace(/\\/g, "/").replace(/"/g, '\\"'); // forward slashes: friendlier in Git Bash
+  const escapedRaw = raw.replace(/"/g, '\\"');
   return `#!/usr/bin/env sh
 # GForge managed pre-commit hook. Delegates secret scanning to the Node engine.
 set -u
@@ -28,13 +30,25 @@ set -u
 HOOK_DIR=$(cd "$(dirname "$0")" && pwd)
 SCANNER="$HOOK_DIR/${SCANNER_FILE_NAME}"
 
+# On Git for Windows the hook runs under MSYS sh; translate the scanner path to a
+# native Windows path so a native node.exe can resolve the module. No-op elsewhere.
+if command -v cygpath >/dev/null 2>&1; then
+  SCANNER=$(cygpath -w "$SCANNER" 2>/dev/null || printf '%s' "$SCANNER")
+fi
+
+# Resolve a Node runtime. GForge is installed via npm so Node exists, but git may
+# run the hook from an environment (GUI client, minimal PATH) that lacks it. Try
+# PATH first, then the interpreter path recorded at install time.
 NODE="\${GFORGE_NODE:-}"
 if [ -z "$NODE" ]; then
-  if command -v node >/dev/null 2>&1; then
-    NODE=node
-  elif [ -x "${fallback}" ]; then
-    NODE="${fallback}"
-  fi
+  for candidate in node node.exe; do
+    if command -v "$candidate" >/dev/null 2>&1; then NODE="$candidate"; break; fi
+  done
+fi
+if [ -z "$NODE" ]; then
+  for candidate in "${fwd}" "${escapedRaw}"; do
+    if [ -n "$candidate" ] && [ -x "$candidate" ]; then NODE="$candidate"; break; fi
+  done
 fi
 
 if [ -z "$NODE" ]; then
