@@ -132,6 +132,36 @@ test("report never contains the matched secret value", () => {
   assert.match(report, /generic-secret-assignment/);
 });
 
+test("detects a bare Twilio auth token only in a Twilio context", () => {
+  const token = "0123456789abcdef0123456789abcdef"; // 32 hex, no keyword
+  assert.ok(ruleIds("app.js", `const c = twilio(sid, '${token}');`).includes("twilio-auth-token"));
+  assert.ok(ruleIds("app.js", `const sid='AC${"a".repeat(32)}';\nconst t='${token}';`).includes("twilio-auth-token"));
+  // No Twilio context: a bare 32-hex string (etag/md5) must NOT be flagged.
+  assert.equal(ruleIds("hash.js", `const etag = '${token}';`).includes("twilio-auth-token"), false);
+  // A 40-hex git SHA must not match the 32-hex token rule even with context.
+  assert.equal(
+    ruleIds("app.js", "// twilio\nconst sha='9e3c1f2a5b7d8e0a1c2b3d4e5f60718293a4b5c6';").includes("twilio-auth-token"),
+    false
+  );
+});
+
+test("cross-references staged code against .env secret values", () => {
+  const token = "0123456789abcdef0123456789abcdef";
+  const leak = scanStaged({
+    ...opts, allowlist: [], dotenvSecrets: [token],
+    files: ["src/twilioClient.js"], read: () => `const client = twilio(sid, "${token}");`
+  });
+  assert.ok(leak.findings.some((f) => f.ruleId === "hardcoded-dotenv-secret"));
+  // The report must not print the value.
+  assert.doesNotMatch(formatReport(leak), new RegExp(token));
+
+  const clean = scanStaged({
+    ...opts, allowlist: [], dotenvSecrets: [token],
+    files: ["clean.js"], read: () => "const answer = 42;"
+  });
+  assert.equal(clean.findings.length, 0);
+});
+
 test("shannon entropy scores random strings above plain text", () => {
   assert.ok(shannonEntropy("Zx9Kq2mVbN7pLwR4tYaSdFgHjKl") > 4.2);
   assert.ok(shannonEntropy("aaaaaaaaaaaaaaaaaaaa") < 1);

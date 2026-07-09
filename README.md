@@ -16,7 +16,9 @@ leak a credential.
 
 - **One command, all repositories.** Configures Git's global `core.hooksPath`, so
   the firewall applies to every repo without per-project setup.
-- **Deep secret detection.** A comprehensive engine covers three layers:
+- **Deep secret detection.** A comprehensive engine covers several layers:
+  - **`.env` cross-reference** — blocks any staged file that hardcodes a real secret
+    value found in your git-ignored `.env` files (e.g. a token pasted out of `.env`).
   - **Provider rules** — 25+ credential shapes (AWS, GitHub/GitLab, Google, Slack,
     Stripe, Twilio, SendGrid, npm, PyPI, OpenAI, private keys, JWTs, DB URLs, …).
   - **Generic secrets** — any credential keyword assigned to a value
@@ -120,7 +122,7 @@ gforge verify
 gforge install
 
 # From now on, commits containing a secret are blocked:
-echo 'DB_PASS=psspl@443e' > config.txt
+echo 'DB_PASS=gForgeDBa@34$5@!' > config.txt
 git add config.txt
 git commit -m "add config"
 # -> GForge blocks the commit and lists config.txt (never printing the value)
@@ -135,12 +137,17 @@ The `pre-commit` hook scans only the files staged for the current commit (not th
 whole repository) and blocks the commit if any appear to contain a secret. It
 reports file paths, line numbers, and rule names — **never** the matched value.
 
-Detection runs four layers:
+Detection runs five layers:
 
+0. **`.env` cross-reference (highest precision)** — GForge reads the actual secret
+   values from your repo's (git-ignored) `.env` files and blocks any staged file
+   that hardcodes one of them verbatim. This catches the classic "copied the token
+   out of `.env` and pasted it into the code" leak with essentially no false
+   positives. Values are read only in memory and never printed.
 1. **Provider rules** — fixed credential shapes for AWS, GitHub, GitLab, Google,
-   Slack, Stripe, Twilio, SendGrid, Mailgun, npm, PyPI, OpenAI, Anthropic,
-   DigitalOcean, Shopify, Telegram, JWTs, PEM private keys, and URLs with embedded
-   credentials.
+   Slack, Stripe, Twilio (including bare auth tokens in a Twilio context), SendGrid,
+   Mailgun, npm, PyPI, OpenAI, Anthropic, DigitalOcean, Shopify, Telegram, JWTs,
+   PEM private keys, and URLs with embedded credentials.
 2. **Generic secrets** — any credential keyword (`password`, `pass`, `pwd`,
    `secret`, `token`, `api_key`, `access_key`, `client_secret`, `private_key`,
    `connection_string`, `credentials`, …) assigned to a hardcoded value, e.g.
