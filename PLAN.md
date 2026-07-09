@@ -36,5 +36,5 @@ gforge uninstall
 1. Initialize Git for this repository.
 2. Choose implementation stack.
 3. Add packaged installation instructions. Done.
-4. Expand hook coverage after the first safe baseline.
+4. Expand hook coverage after the first safe baseline. Done (staged-delta scan, broader secret shapes, fail-closed).
 5. Prepare release validation.

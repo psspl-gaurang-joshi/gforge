@@ -189,9 +189,131 @@ test("verify reports missing managed hooks", async () => {
   assert.equal(report.checks.some((check) => check.status === "FAIL"), true);
 });
 
-test("pre-commit hook lists files without printing matched secret values", () => {
-  assert.match(PRE_COMMIT_HOOK, /git grep --cached -l/);
-  assert.doesNotMatch(PRE_COMMIT_HOOK, /git grep --cached -n/);
+test("pre-commit hook scans only the staged delta and never prints matched values", () => {
+  // Scoped to what is being committed, not the whole index snapshot.
+  assert.match(PRE_COMMIT_HOOK, /diff --cached --name-only --diff-filter=d/);
+  // Quiet match: grep reports match/no-match only, never the matched text.
+  assert.match(PRE_COMMIT_HOOK, /grep -E -i -a -q/);
+  // No grep option that would echo matched content (-o / -n).
+  assert.doesNotMatch(PRE_COMMIT_HOOK, / -o\b/);
+  assert.doesNotMatch(PRE_COMMIT_HOOK, /grep[^\n]* -n\b/);
+  // Fails closed: an unscannable file blocks the commit rather than slipping through.
+  assert.match(PRE_COMMIT_HOOK, /could not scan; blocked/);
+});
+
+test("reinstall does not fabricate a backup over a recorded 'was unset' state", async () => {
+  const homePath = await createTempHome();
+  const git = createGitConfigMock();
+
+  await installManagedHooks({
+    environment: createEnvironment(homePath),
+    execFile: git.execFile
+  });
+
+  // Something external repoints core.hooksPath away from the managed dir before a reinstall.
+  git.setHooksPath("/some/other/hooks");
+  await installManagedHooks({
+    environment: createEnvironment(homePath),
+    execFile: git.execFile
+  });
+
+  const state = JSON.parse(await readFile(resolveStatePath(homePath), "utf8"));
+  assert.equal(state.previousCoreHooksPath, null);
+});
+
+test("reinstall preserves an unreadable state file instead of discarding it", async () => {
+  const homePath = await createTempHome();
+  const git = createGitConfigMock("/existing/hooks");
+
+  await installManagedHooks({
+    environment: createEnvironment(homePath),
+    execFile: git.execFile
+  });
+  await writeFile(resolveStatePath(homePath), "totally not json");
+
+  await installManagedHooks({
+    environment: createEnvironment(homePath),
+    execFile: git.execFile
+  });
+
+  assert.equal(await readFile(`${resolveStatePath(homePath)}.corrupt`, "utf8"), "totally not json");
+  const state = JSON.parse(await readFile(resolveStatePath(homePath), "utf8"));
+  assert.equal(state.managedBy, "gforge");
+});
+
+test("install leaves no temporary files behind", async () => {
+  const homePath = await createTempHome();
+  const git = createGitConfigMock();
+
+  await installManagedHooks({
+    environment: createEnvironment(homePath),
+    execFile: git.execFile
+  });
+
+  const hooksDirectory = resolveHooksDirectory(homePath);
+  await assert.rejects(stat(join(hooksDirectory, "pre-commit.gforge-tmp")), { code: "ENOENT" });
+  await assert.rejects(stat(`${resolveStatePath(homePath)}.gforge-tmp`), { code: "ENOENT" });
+});
+
+test("verify warns when a repo-local hooks path shadows the managed hooks", async () => {
+  const homePath = await createTempHome();
+  const hooksDirectory = resolveHooksDirectory(homePath);
+  const execFile = async (command, args) => {
+    assert.equal(command, "git");
+    const joined = args.join(" ");
+
+    if (joined === "config --global --get core.hooksPath") {
+      return { stdout: `${hooksDirectory}\n` };
+    }
+
+    if (joined === "config --get core.hooksPath") {
+      return { stdout: "/repo/.husky/_\n" };
+    }
+
+    throw new Error(`Unexpected git args: ${joined}`);
+  };
+
+  const report = await verifyManagedHooks({
+    environment: createEnvironment(homePath),
+    execFile
+  });
+
+  const warning = report.checks.find((check) => check.label === "effective-hooks-path");
+  assert.ok(warning, "expected an effective-hooks-path check");
+  assert.equal(warning.status, "WARN");
+  assert.match(warning.detail, /\.husky/);
+});
+
+test("uninstall still removes files when the global gitconfig cannot be read", async () => {
+  const homePath = await createTempHome();
+  const git = createGitConfigMock();
+
+  await installManagedHooks({
+    environment: createEnvironment(homePath),
+    execFile: git.execFile
+  });
+
+  // Simulate a malformed ~/.gitconfig: reads fail with a non-1 exit code.
+  const execFile = async (command, args) => {
+    const joined = args.join(" ");
+
+    if (joined === "config --global --get core.hooksPath" || joined === "config --get core.hooksPath") {
+      const error = new Error("fatal: bad config");
+      error.code = 128;
+      throw error;
+    }
+
+    return git.execFile(command, args);
+  };
+
+  const result = await uninstallManagedHooks({
+    environment: createEnvironment(homePath),
+    execFile
+  });
+
+  assert.equal(result.ok, true);
+  await assert.rejects(stat(join(resolveHooksDirectory(homePath), "pre-commit")), { code: "ENOENT" });
+  await assert.rejects(stat(resolveStatePath(homePath)), { code: "ENOENT" });
 });
 
 async function createTempHome() {
@@ -218,7 +340,10 @@ function createGitConfigMock(initialHooksPath = null) {
     execFile: async (command, args) => {
       assert.equal(command, "git");
 
-      if (args.join(" ") === "config --global --get core.hooksPath") {
+      if (
+        args.join(" ") === "config --global --get core.hooksPath" ||
+        args.join(" ") === "config --get core.hooksPath"
+      ) {
         if (!hooksPath) {
           const error = new Error("unset");
           error.code = 1;
