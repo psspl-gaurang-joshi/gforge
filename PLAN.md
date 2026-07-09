@@ -31,10 +31,24 @@ gforge uninstall
 - Git config changes must be backed up or clearly reversible.
 - Hooks must avoid exposing secrets in logs.
 
+## Detection Engine (v0.2)
+
+The pre-commit hook delegates to a self-contained Node scanner (`src/scanner.js`,
+installed as `~/.gforge/hooks/gforge-scan.mjs`):
+
+- Provider rules (AWS, GitHub, Google, Slack, Stripe, npm, private keys, JWTs, …).
+- Generic credential keyword=value detection (catches `DB_PASS=…`).
+- Shannon-entropy detection for unnamed secrets (skips SHAs/UUIDs/lockfiles).
+- Secret-file rules (`.env`, `id_rsa`, `*.p12`, keystores, …; templates allowed).
+- Allowlist via `.gforgeignore` and inline `gforge:allow`.
+- Optional gitleaks pass merged in when the binary is present.
+- Redacted output (never prints matched values); fails closed on scan errors.
+
 ## Next Work
 
-1. Initialize Git for this repository.
-2. Choose implementation stack.
+1. Initialize Git for this repository. Done.
+2. Choose implementation stack. Done (Node ESM, zero deps).
 3. Add packaged installation instructions. Done.
-4. Expand hook coverage after the first safe baseline. Done (staged-delta scan, broader secret shapes, fail-closed).
-5. Prepare release validation.
+4. Expand hook coverage after the first safe baseline. Done (v0.2 engine above).
+5. Prepare release validation. Done (published to npm as `gforge`).
+6. Consider: configurable rule packs, per-org shared allowlists, secret history scan.
