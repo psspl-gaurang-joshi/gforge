@@ -1,5 +1,5 @@
 {
-  "name": "@gaurangnil/gforge",
+  "name": "gforge",
   "version": "0.1.0",
   "description": "Secure global Git hooks installer that blocks commits containing secrets, across macOS, Linux, and Windows.",
   "keywords": [
@@ -29,9 +29,6 @@
     "url": "https://github.com/psspl-gaurang-joshi/gforge/issues"
   },
   "homepage": "https://github.com/psspl-gaurang-joshi/gforge#readme",
-  "publishConfig": {
-    "access": "public"
-  },
   "bin": {
     "gforge": "bin/gforge.js"
   },

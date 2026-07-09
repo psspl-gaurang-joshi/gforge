@@ -1,8 +1,8 @@
 # GForge
 
-[![npm version](https://img.shields.io/npm/v/@gaurangnil/gforge.svg)](https://www.npmjs.com/package/@gaurangnil/gforge)
-[![node](https://img.shields.io/node/v/@gaurangnil/gforge.svg)](https://nodejs.org)
-[![license](https://img.shields.io/npm/l/@gaurangnil/gforge.svg)](LICENSE)
+[![npm version](https://img.shields.io/npm/v/gforge.svg)](https://www.npmjs.com/package/gforge)
+[![node](https://img.shields.io/node/v/gforge.svg)](https://nodejs.org)
+[![license](https://img.shields.io/npm/l/gforge.svg)](LICENSE)
 
 Secure global Git hooks installer for developer workstations. GForge installs a
 managed global `pre-commit` hook that blocks commits containing secrets, across
@@ -33,7 +33,7 @@ leak an API key, token, or private key.
 Install globally from npm:
 
 ```bash
-npm install -g @gaurangnil/gforge
+npm install -g gforge
 ```
 
 <details>
@@ -126,7 +126,7 @@ in the current repository.
 GForge is primarily a CLI. The command runner is also exposed for scripting:
 
 ```js
-import { runCli } from "@gaurangnil/gforge";
+import { runCli } from "gforge";
 
 const result = await runCli(["verify"], { stdout: process.stdout, stderr: process.stderr });
 process.exit(result.exitCode);
