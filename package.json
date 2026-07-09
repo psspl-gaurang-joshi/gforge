@@ -1,22 +1,41 @@
 {
-  "name": "@psspl-gaurang-joshi/gforge",
+  "name": "gforge",
   "version": "0.1.0",
-  "description": "Secure global Git hooks installer for developer workstations.",
+  "description": "Secure global Git hooks installer that blocks commits containing secrets, across macOS, Linux, and Windows.",
+  "keywords": [
+    "git",
+    "git-hooks",
+    "githooks",
+    "hooks",
+    "pre-commit",
+    "core.hookspath",
+    "secrets",
+    "secret-scanning",
+    "secret-detection",
+    "credentials",
+    "security",
+    "devsecops",
+    "cli",
+    "global-hooks"
+  ],
   "license": "Apache-2.0",
+  "author": "Gaurang Joshi (https://github.com/psspl-gaurang-joshi)",
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "git+ssh://git@github.com/psspl-gaurang-joshi/gforge.git"
+    "url": "git+https://github.com/psspl-gaurang-joshi/gforge.git"
   },
   "bugs": {
     "url": "https://github.com/psspl-gaurang-joshi/gforge/issues"
   },
   "homepage": "https://github.com/psspl-gaurang-joshi/gforge#readme",
-  "publishConfig": {
-    "access": "public"
-  },
   "bin": {
-    "gforge": "./bin/gforge.js"
+    "gforge": "bin/gforge.js"
+  },
+  "main": "src/cli.js",
+  "exports": {
+    ".": "./src/cli.js",
+    "./package.json": "./package.json"
   },
   "files": [
     "bin",
@@ -30,8 +49,8 @@
     "node": ">=20"
   },
   "scripts": {
-    "package:check": "npm pack --dry-run --cache .npm-cache",
     "test": "node --test",
+    "package:check": "npm pack --dry-run",
     "prepublishOnly": "node --test"
   }
 }

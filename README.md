@@ -1,61 +1,48 @@
 # GForge
 
-GForge is a small installer for secure global Git hooks on developer workstations.
+[![npm version](https://img.shields.io/npm/v/gforge.svg)](https://www.npmjs.com/package/gforge)
+[![node](https://img.shields.io/node/v/gforge.svg)](https://nodejs.org)
+[![license](https://img.shields.io/npm/l/gforge.svg)](LICENSE)
 
-The goal is simple: install, verify, update, and remove a managed global Git hook setup that helps prevent unsafe commits across repositories on a workstation.
+Secure global Git hooks installer for developer workstations. GForge installs a
+managed global `pre-commit` hook that blocks commits containing secrets, across
+every repository on the machine, on macOS, Linux, and Windows.
 
-Current status: managed hook install, verify, update, and uninstall.
+Install once, and every `git commit` on the workstation is checked before it can
+leak an API key, token, or private key.
 
-## Scope
+## Features
 
-GForge should:
+- **One command, all repositories.** Configures Git's global `core.hooksPath`, so
+  the hook applies to every repo without per-project setup.
+- **Secret-aware pre-commit hook.** Scans only the files staged for the current
+  commit and blocks it when a likely secret is found. Reports file paths only,
+  never the matched value.
+- **Cross-platform.** macOS (Bash/Zsh), Linux (Bash), and Windows (Git Bash / WSL).
+- **Safe lifecycle.** `install` is idempotent, `verify` is read-only, and
+  `uninstall` removes only GForge-owned files and restores your prior Git config.
+- **Zero runtime dependencies.**
 
-- Detect Git and supported shell/platform basics.
-- Install a managed global Git hooks directory.
-- Configure Git to use the managed hooks through `core.hooksPath`.
-- Provide security-focused hooks, starting with secret-leak prevention.
-- Verify the installed hook path and hook files.
-- Update managed hooks safely.
-- Uninstall only GForge-owned files and config.
-
-GForge should not:
-
-- Manage CI/CD, cloud infrastructure, IDEs, or application deployment.
-- Become a general workstation provisioning platform.
-- Include UI, design system, or frontend work.
-- Store secrets or weaken Git/security behavior.
-
-## Supported Targets
-
-Initial targets:
-
-- macOS with Bash or Zsh
-- Linux with Bash
-- Windows through PowerShell or WSL
-
-## Minimal Repository Docs
-
-- `README.md`: project overview
-- `PLAN.md`: implementation plan
-- `AGENTS.md`: generic AI/automation contributor rules
-- `LICENSE`: Apache License 2.0
-- `NOTICE`: required project notice
-
-## Development Rule
-
-Keep documentation short. Prefer updating these files over adding new docs unless a new file is truly needed.
-
-## Installation
-
-Prerequisites:
+## Requirements
 
 - Node.js 20 or newer
 - Git
 
-Install globally from this repository:
+## Installation
+
+Install globally from npm:
 
 ```bash
-npm install -g git+ssh://git@github.com/psspl-gaurang-joshi/gforge.git
+npm install -g gforge
+```
+
+<details>
+<summary>Other install methods</summary>
+
+Install from the Git repository:
+
+```bash
+npm install -g git+https://github.com/psspl-gaurang-joshi/gforge.git
 ```
 
 Install from a local clone:
@@ -64,81 +51,108 @@ Install from a local clone:
 npm install -g .
 ```
 
-During development, link the local CLI:
+Link the local CLI during development:
 
 ```bash
 npm link
 ```
 
-## Development
-
-Run tests with:
-
-```bash
-npm test
-```
-
-Check package contents with:
-
-```bash
-npm run package:check
-```
+</details>
 
 ## Usage
 
-Verify the current workstation state:
+```bash
+gforge <command>
+```
+
+| Command | Description |
+| --- | --- |
+| `gforge install` | Install managed global hooks and set global `core.hooksPath`. |
+| `gforge verify` | Read-only check of environment and installed hooks. |
+| `gforge update` | Re-apply the latest managed hooks (idempotent). |
+| `gforge uninstall` | Remove GForge-owned hooks and restore prior Git config. |
+| `gforge version` | Print the version. |
+| `gforge help` | Print help. |
+
+### Example
 
 ```bash
+# Check the workstation before installing
 gforge verify
-```
 
-Install managed global hooks with:
-
-```bash
+# Install the managed global hooks
 gforge install
-```
 
-This creates `~/.gforge/hooks`, installs GForge-managed hooks, and sets global Git `core.hooksPath`.
+# From now on, commits with a leaked secret are blocked:
+echo 'AWS_SECRET=AKIAIOSFODNN7EXAMPLE' > config.txt
+git add config.txt
+git commit -m "add config"
+# -> GForge blocks the commit and lists config.txt
 
-Update managed hooks with:
-
-```bash
-gforge update
-```
-
-Uninstall GForge-owned hooks and restore prior Git hook configuration with:
-
-```bash
+# Remove everything GForge installed
 gforge uninstall
 ```
 
-To remove the global npm package after uninstalling hooks:
+## How the managed pre-commit hook works
 
-```bash
-npm uninstall -g @psspl-gaurang-joshi/gforge
-```
+The `pre-commit` hook scans only the files staged for the current commit (not the
+whole repository) and blocks the commit if any appear to contain a secret. It
+reports file paths only and never prints the matched value.
 
-## Managed pre-commit hook
-
-The managed `pre-commit` hook scans only the files staged for the current commit
-(not the whole repository) and blocks the commit if any appear to contain a
-secret. It reports the file paths only and never prints the matched value.
-
-It flags common credential shapes: private keys, AWS access key IDs, GitHub and
-Google API keys, Stripe and npm tokens, plus `AWS_ACCESS_KEY_ID`,
+It flags common credential shapes — private keys, AWS access key IDs, GitHub and
+Google API keys, Stripe and npm tokens — plus `AWS_ACCESS_KEY_ID`,
 `AWS_SECRET_ACCESS_KEY`, `GITHUB_TOKEN`, and `NPM_TOKEN` assigned to a value. A
 bare reference such as `process.env.GITHUB_TOKEN` is not flagged. To commit past a
 false positive, use `git commit --no-verify`.
 
 Detection is best-effort and not a substitute for keeping secrets out of Git.
 
-## Scope limitation
+## Configuration and file layout
 
-GForge configures Git's global `core.hooksPath`. Git lets a repository-local or
-system `core.hooksPath` override the global one, so in a repository that sets its
-own hooks path (for example Husky or lefthook) the managed hook does not run.
-`gforge verify` warns when it detects such an override in the current repository.
+GForge stores its files under the user's home directory and touches only global
+Git config:
+
+- `~/.gforge/hooks/` — managed hook scripts (`core.hooksPath` points here).
+- `~/.gforge/state.json` — records the prior `core.hooksPath` so `uninstall` can
+  restore it.
+
+Git lets a repository-local or system `core.hooksPath` override the global one, so
+in a repository that sets its own hooks path (for example Husky or lefthook) the
+managed hook does not run. `gforge verify` warns when it detects such an override
+in the current repository.
+
+## Programmatic use
+
+GForge is primarily a CLI. The command runner is also exposed for scripting:
+
+```js
+import { runCli } from "gforge";
+
+const result = await runCli(["verify"], { stdout: process.stdout, stderr: process.stderr });
+process.exit(result.exitCode);
+```
+
+## Development
+
+```bash
+npm test              # run the test suite
+npm run package:check # inspect the publishable tarball contents
+```
+
+## Contributing
+
+Issues and pull requests are welcome at
+[the GitHub repository](https://github.com/psspl-gaurang-joshi/gforge). Please keep
+changes focused, run `npm test` before submitting, and preserve the Apache 2.0
+license header and `NOTICE`.
+
+## Security
+
+To report a vulnerability, follow the process in [SECURITY.md](SECURITY.md). Do not
+open a public issue for security reports, and never include real secrets in a
+report.
 
 ## License
 
-Licensed under the Apache License, Version 2.0. Preserve the notice in `NOTICE` when redistributing.
+Licensed under the Apache License, Version 2.0. Preserve the notice in `NOTICE`
+when redistributing.
