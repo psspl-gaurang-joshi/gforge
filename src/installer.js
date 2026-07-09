@@ -1,8 +1,13 @@
-import { chmod, mkdir, readFile, rmdir, stat, unlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rename, rmdir, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { detectEnvironment } from "./environment.js";
-import { getGlobalHooksPath, setGlobalHooksPath, unsetGlobalHooksPath } from "./git-config.js";
+import {
+  getEffectiveHooksPath,
+  getGlobalHooksPath,
+  setGlobalHooksPath,
+  unsetGlobalHooksPath
+} from "./git-config.js";
 import {
   MANAGED_HOOKS,
   resolveHooksDirectory,
@@ -90,8 +95,8 @@ export async function uninstallManagedHooks(options = {}) {
   const managedDirectory = resolveManagedDirectory(homePath);
   const hooksDirectory = resolveHooksDirectory(homePath);
   const statePath = resolveStatePath(homePath);
-  const state = await readJsonFile(statePath);
-  const configuredHooksPath = await getGlobalHooksPath(execFileFn);
+  const { state, corrupt } = await readStateFile(statePath);
+  const configuredHooksPath = await safeGetGlobalHooksPath(execFileFn);
   const messages = [];
 
   if (configuredHooksPath === hooksDirectory) {
@@ -100,7 +105,11 @@ export async function uninstallManagedHooks(options = {}) {
       messages.push(`Restored global core.hooksPath to ${state.previousCoreHooksPath}`);
     } else {
       await unsetGlobalHooksPath(execFileFn);
-      messages.push("Removed global core.hooksPath managed by GForge");
+      messages.push(
+        corrupt
+          ? "Unset global core.hooksPath; GForge state file was unreadable so no prior value could be restored"
+          : "Removed global core.hooksPath managed by GForge"
+      );
     }
   } else {
     messages.push(
@@ -159,6 +168,15 @@ export async function verifyManagedHooks(options = {}) {
       : "core.hooksPath is not configured"
   });
 
+  const effectiveHooksPath = await safeGetEffectiveHooksPath(execFileFn);
+  if (effectiveHooksPath && effectiveHooksPath !== hooksDirectory) {
+    checks.push({
+      status: "WARN",
+      label: "effective-hooks-path",
+      detail: `core.hooksPath resolves to ${effectiveHooksPath} here; a repository-local or system override shadows the managed hooks, so GForge will not run in this repository`
+    });
+  }
+
   checks.push(await checkDirectory(hooksDirectory));
 
   for (const [name, expectedContent] of MANAGED_HOOKS) {
@@ -214,9 +232,17 @@ function validateUninstallPreflight(environment) {
 async function writeManagedHooks(hooksDirectory) {
   for (const [name, content] of MANAGED_HOOKS) {
     const hookPath = join(hooksDirectory, name);
-    await writeFile(hookPath, content, { mode: EXECUTABLE_MODE });
-    await chmod(hookPath, EXECUTABLE_MODE);
+    await writeFileAtomic(hookPath, content, EXECUTABLE_MODE);
   }
+}
+
+// Write via a sibling temp file and rename into place so readers (a concurrent
+// git commit, or a crash mid-write) never observe a truncated or empty hook.
+async function writeFileAtomic(filePath, content, mode) {
+  const tempPath = `${filePath}.gforge-tmp`;
+  await writeFile(tempPath, content, { mode });
+  await chmod(tempPath, mode);
+  await rename(tempPath, filePath);
 }
 
 async function removeManagedFiles(hooksDirectory, statePath) {
@@ -255,10 +281,24 @@ async function removeEmptyDirectory(directoryPath) {
 }
 
 async function writeInstallState(statePath, hooksDirectory, currentHooksPath) {
-  const existingState = await readJsonFile(statePath);
-  const previousCoreHooksPath =
-    existingState?.previousCoreHooksPath ??
-    (currentHooksPath && currentHooksPath !== hooksDirectory ? currentHooksPath : null);
+  const { corrupt, state: existingState } = await readStateFile(statePath);
+
+  if (corrupt) {
+    // Never silently discard an unreadable backup; preserve it for recovery
+    // rather than overwriting the only record of the original hooks path.
+    await preserveCorruptState(statePath);
+  }
+
+  let previousCoreHooksPath;
+  if (existingState && "previousCoreHooksPath" in existingState) {
+    // A prior install already recorded the original config (including a
+    // deliberate null meaning "was unset"); never overwrite that backup.
+    previousCoreHooksPath = existingState.previousCoreHooksPath;
+  } else if (currentHooksPath && currentHooksPath !== hooksDirectory) {
+    previousCoreHooksPath = currentHooksPath;
+  } else {
+    previousCoreHooksPath = null;
+  }
 
   const state = {
     version: 1,
@@ -267,25 +307,49 @@ async function writeInstallState(statePath, hooksDirectory, currentHooksPath) {
     previousCoreHooksPath
   };
 
-  await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
-  await chmod(statePath, 0o600);
+  await writeFileAtomic(statePath, `${JSON.stringify(state, null, 2)}\n`, 0o600);
 }
 
-async function readJsonFile(filePath) {
+// Distinguishes a genuinely absent state file (fresh install) from a present
+// but unparseable one, so a corrupt file is not mistaken for "no prior state".
+async function readStateFile(statePath) {
+  let raw;
   try {
-    return JSON.parse(await readFile(filePath, "utf8"));
+    raw = await readFile(statePath, "utf8");
   } catch (error) {
-    if (error?.code === "ENOENT" || error instanceof SyntaxError) {
-      return null;
+    if (error?.code === "ENOENT") {
+      return { present: false, corrupt: false, state: null };
     }
 
     throw error;
+  }
+
+  try {
+    return { present: true, corrupt: false, state: JSON.parse(raw) };
+  } catch {
+    return { present: true, corrupt: true, state: null };
+  }
+}
+
+async function preserveCorruptState(statePath) {
+  try {
+    await rename(statePath, `${statePath}.corrupt`);
+  } catch {
+    // Best effort only: if it cannot be preserved, the fresh write proceeds.
   }
 }
 
 async function safeGetGlobalHooksPath(execFileFn) {
   try {
     return await getGlobalHooksPath(execFileFn);
+  } catch {
+    return null;
+  }
+}
+
+async function safeGetEffectiveHooksPath(execFileFn) {
+  try {
+    return await getEffectiveHooksPath(execFileFn);
   } catch {
     return null;
   }

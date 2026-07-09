@@ -58,7 +58,20 @@ async function detectGit(execFileFn) {
 
 function detectShellPath(env, platform) {
   if (platform === "win32") {
-    return env.PSModulePath ? "powershell" : env.ComSpec ?? env.SHELL ?? null;
+    // PSModulePath is inherited by virtually every Windows process (cmd, Explorer
+    // children, pwsh) so it cannot signal a live PowerShell session. Prefer a real
+    // shell hint: SHELL (set by Git Bash/WSL), then the pwsh session marker, then
+    // ComSpec (typically cmd.exe). The shell field is informational only; hooks run
+    // through git's bundled sh regardless.
+    if (env.SHELL) {
+      return env.SHELL;
+    }
+
+    if (env.POWERSHELL_DISTRIBUTION_CHANNEL) {
+      return "pwsh";
+    }
+
+    return env.ComSpec ?? null;
   }
 
   return env.SHELL ?? null;
