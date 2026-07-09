@@ -72,6 +72,29 @@ npm link
 
 </details>
 
+After installing, run it once to set up the global hooks:
+
+```bash
+gforge install
+```
+
+## Upgrading
+
+```bash
+npm install -g gforge
+```
+
+If GForge is already active, upgrading **automatically refreshes** the installed
+hook to the new version (via a postinstall step) — no extra command needed.
+`gforge verify` will confirm `gforge-scan.mjs-content: managed content matches`.
+
+Two caveats:
+
+- If you install with `npm install --ignore-scripts` (or your environment blocks
+  install scripts), run `gforge update` yourself after upgrading.
+- `gforge verify` reports `installed engine is stale — run gforge update` whenever
+  the on-disk hook lags the installed CLI, so a missed refresh is easy to spot.
+
 ## Usage
 
 ```bash

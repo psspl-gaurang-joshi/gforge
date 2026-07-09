@@ -50,7 +50,7 @@ export const PROVIDER_RULES = [
     // A credential keyword (as its own token, e.g. DB_PASS, api-key, secret)
     // assigned (= or :) to a non-trivial value. Bare references such as
     // process.env.GITHUB_TOKEN (no assignment) are not matched.
-    regex: /(?:^|[^A-Za-z0-9])(?:passwd|password|passphrase|pwd|pass|secret(?:[_-]?key)?|token|access[_-]?token|auth[_-]?token|api[_-]?key|apikey|access[_-]?key|client[_-]?secret|private[_-]?key|encryption[_-]?key|credentials?)["'`]?\s*[:=]\s*["'`]?[^\s"'`]{4,}/i
+    regex: /(?:^|[^A-Za-z0-9])(?:passwd|password|passphrase|pwd|pass|secret(?:[_-]?key)?|token|access[_-]?token|auth(?:[_-]?token)?|authorization|bearer|api[_-]?key|apikey|access[_-]?key|client[_-]?secret|private[_-]?key|encryption[_-]?key|signing[_-]?key|session[_-]?key|connection[_-]?string|conn[_-]?str|credentials?)["'`]?\s*[:=]\s*["'`]?[^\s"'`]{4,}/i
   }
 ];
 

@@ -20,6 +20,15 @@ test("detects a generic keyword=value secret (the DB_PASS regression)", () => {
   assert.ok(ruleIds("a.js", "const api_key = 'abcd1234efgh'").includes("generic-secret-assignment"));
 });
 
+test("detects a variety of hardcoded password/credential assignments", () => {
+  assert.ok(ruleIds("a.js", 'const password = "s3cr3tValue!"').includes("generic-secret-assignment"));
+  assert.ok(ruleIds("a.py", "PASSWORD = 'hunter2value'").includes("generic-secret-assignment"));
+  assert.ok(ruleIds("a.json", '"client_secret": "abcd1234efgh5678"').includes("generic-secret-assignment"));
+  assert.ok(ruleIds("a.ini", "connection_string=Server=db;Pwd=abcd1234;").includes("generic-secret-assignment"));
+  assert.ok(ruleIds("a.txt", "Authorization: Bearer abcdef2345token").includes("generic-secret-assignment"));
+  assert.ok(ruleIds("a.env", "SESSION_KEY=9f8e7d6c5b4a3210").includes("generic-secret-assignment"));
+});
+
 test("detects provider tokens and private keys", () => {
   assert.ok(ruleIds("a", `ghp_${"a".repeat(36)}`).includes("github-pat"));
   assert.ok(ruleIds("a", "AKIAIOSFODNN7EXAMPLE").includes("aws-access-key-id"));

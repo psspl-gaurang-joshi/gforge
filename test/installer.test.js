@@ -85,6 +85,41 @@ test("verifies installed managed hooks", async () => {
   assert.equal(report.checks.every((check) => check.status === "PASS"), true);
 });
 
+test("records the gforge version in state so upgrades are detectable", async () => {
+  const homePath = await createTempHome();
+  const git = createGitConfigMock();
+
+  await installManagedHooks({
+    environment: createEnvironment(homePath),
+    execFile: git.execFile
+  });
+
+  const state = JSON.parse(await readFile(resolveStatePath(homePath), "utf8"));
+  const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+  assert.equal(state.gforgeVersion, pkg.version);
+});
+
+test("verify flags a stale on-disk engine and points at the fix", async () => {
+  const homePath = await createTempHome();
+  const git = createGitConfigMock();
+
+  await installManagedHooks({
+    environment: createEnvironment(homePath),
+    execFile: git.execFile
+  });
+  // Simulate an upgraded package whose on-disk hook was not refreshed.
+  await writeFile(resolveScannerPath(homePath), "// stale engine\n");
+
+  const report = await verifyManagedHooks({
+    environment: createEnvironment(homePath),
+    execFile: git.execFile
+  });
+
+  const scannerCheck = report.checks.find((check) => check.label.startsWith(SCANNER_FILE_NAME));
+  assert.equal(scannerCheck.status, "FAIL");
+  assert.match(scannerCheck.detail, /stale|gforge update/);
+});
+
 test("updates managed hooks idempotently", async () => {
   const homePath = await createTempHome();
   const git = createGitConfigMock();

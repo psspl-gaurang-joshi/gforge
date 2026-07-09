@@ -1,6 +1,6 @@
 {
   "name": "gforge",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "A git firewall: a global pre-commit hook that blocks commits containing secrets (passwords, keys, tokens, .env files) across macOS, Linux, and Windows.",
   "keywords": [
     "git",
@@ -40,6 +40,7 @@
   "files": [
     "bin",
     "src",
+    "scripts",
     "LICENSE",
     "NOTICE",
     "README.md",
@@ -51,6 +52,7 @@
   "scripts": {
     "test": "node --test",
     "package:check": "npm pack --dry-run",
+    "postinstall": "node scripts/postinstall.js",
     "prepublishOnly": "node --test"
   }
 }

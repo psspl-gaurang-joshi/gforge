@@ -2,6 +2,7 @@ import { chmod, mkdir, readFile, rename, rmdir, stat, unlink, writeFile } from "
 import { join } from "node:path";
 
 import { detectEnvironment } from "./environment.js";
+import { VERSION } from "./metadata.js";
 import {
   getEffectiveHooksPath,
   getGlobalHooksPath,
@@ -185,7 +186,7 @@ export async function verifyManagedHooks(options = {}) {
   checks.push(await checkDirectory(hooksDirectory));
 
   const scannerPath = resolveScannerPath(environment.home.path);
-  checks.push(await checkHookContent(SCANNER_FILE_NAME, scannerPath, getScannerContent()));
+  checks.push(await checkScannerContent(scannerPath));
 
   const preCommitPath = resolvePreCommitPath(environment.home.path);
   checks.push(await checkPreCommitShim(preCommitPath));
@@ -195,6 +196,30 @@ export async function verifyManagedHooks(options = {}) {
     hooksDirectory,
     checks
   };
+}
+
+// Compares the installed engine against the current package's engine. A mismatch
+// almost always means the package was upgraded but the hook was not refreshed,
+// so the message points straight at the fix.
+async function checkScannerContent(scannerPath) {
+  const expected = getScannerContent();
+  try {
+    const actual = await readFile(scannerPath, "utf8");
+    if (actual === expected) {
+      return { status: "PASS", label: `${SCANNER_FILE_NAME}-content`, detail: "managed content matches" };
+    }
+    return {
+      status: "FAIL",
+      label: `${SCANNER_FILE_NAME}-content`,
+      detail: "installed engine is stale or modified — run `gforge update`"
+    };
+  } catch {
+    return {
+      status: "FAIL",
+      label: `${SCANNER_FILE_NAME}-content`,
+      detail: "engine not found — run `gforge update`"
+    };
+  }
 }
 
 // The pre-commit shim embeds a machine-specific Node path, so verify checks its
@@ -329,6 +354,7 @@ async function writeInstallState(statePath, hooksDirectory, currentHooksPath, no
   const state = {
     version: 2,
     managedBy: "gforge",
+    gforgeVersion: VERSION,
     hooksDirectory,
     nodePath: nodePath ?? null,
     previousCoreHooksPath
@@ -395,23 +421,6 @@ async function checkDirectory(hooksDirectory) {
       status: "FAIL",
       label: "hooks-directory",
       detail: `${hooksDirectory} not found`
-    };
-  }
-}
-
-async function checkHookContent(name, hookPath, expectedContent) {
-  try {
-    const actualContent = await readFile(hookPath, "utf8");
-    return {
-      status: actualContent === expectedContent ? "PASS" : "FAIL",
-      label: `${name}-content`,
-      detail: actualContent === expectedContent ? "managed content matches" : "managed content differs"
-    };
-  } catch {
-    return {
-      status: "FAIL",
-      label: `${name}-content`,
-      detail: `${hookPath} not found`
     };
   }
 }
