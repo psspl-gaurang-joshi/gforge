@@ -143,8 +143,11 @@ Detection runs four layers:
    credentials.
 2. **Generic secrets** — any credential keyword (`password`, `pass`, `pwd`,
    `secret`, `token`, `api_key`, `access_key`, `client_secret`, `private_key`,
-   `credentials`, …) assigned to a value, e.g. `DB_PASS=…`. Bare references such as
-   `process.env.GITHUB_TOKEN` (no assigned value) are not flagged.
+   `connection_string`, `credentials`, …) assigned to a hardcoded value, e.g.
+   `DB_PASS=…` or `password: "MyS3cretDbPass"`. Values that are **references**
+   (`password: process.env.DB_PASSWORD`, `config.get(...)`, `${VAR}` interpolation,
+   `$VAR`) or obvious placeholders are not flagged — so well-written config keeps
+   working.
 3. **Entropy** — high-entropy strings with no recognizable name. Tuned to skip git
    SHAs, UUIDs, and lockfiles.
 4. **Secret files** — `.env` and `.env.*` (except templates like `.env.example`),

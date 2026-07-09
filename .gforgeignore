@@ -1,4 +1,6 @@
 # GForge allowlist for this repository.
-# The scanner's own test suite intentionally contains fake secret fixtures
-# (example provider tokens, a sample DB password) used to exercise detection.
+# The scanner's own source and test suite intentionally contain secret-shaped
+# patterns and fake fixtures (example provider tokens, a sample DB password)
+# used to define and exercise detection.
+^src/scanner\.js$
 ^test/scanner\.test\.js$
