@@ -1,5 +1,5 @@
 {
-  "name": "@psspl-gaurang-joshi/gforge",
+  "name": "@gaurangnil/gforge",
   "version": "0.1.0",
   "description": "Secure global Git hooks installer that blocks commits containing secrets, across macOS, Linux, and Windows.",
   "keywords": [
