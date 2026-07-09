@@ -112,6 +112,20 @@ test("fails verification when git is unavailable", async () => {
   assert.match(streams.stdout.value, /FAIL git: git not found/);
 });
 
+test("reports a friendly error when a mutating command throws", async () => {
+  const streams = createStreams();
+  const result = await runCli(["install"], streams, {
+    installManagedHooks: async () => {
+      throw new Error("EACCES: permission denied, mkdir '/root/.gforge'");
+    }
+  });
+
+  assert.equal(result.exitCode, 1);
+  assert.match(streams.stderr.value, /GForge install failed/);
+  assert.match(streams.stderr.value, /permission denied/);
+  assert.equal(streams.stdout.value, "");
+});
+
 test("rejects unknown commands", async () => {
   const streams = createStreams();
   const result = await runCli(["wat"], streams);

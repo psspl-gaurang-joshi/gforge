@@ -118,6 +118,27 @@ To remove the global npm package after uninstalling hooks:
 npm uninstall -g @psspl-gaurang-joshi/gforge
 ```
 
+## Managed pre-commit hook
+
+The managed `pre-commit` hook scans only the files staged for the current commit
+(not the whole repository) and blocks the commit if any appear to contain a
+secret. It reports the file paths only and never prints the matched value.
+
+It flags common credential shapes: private keys, AWS access key IDs, GitHub and
+Google API keys, Stripe and npm tokens, plus `AWS_ACCESS_KEY_ID`,
+`AWS_SECRET_ACCESS_KEY`, `GITHUB_TOKEN`, and `NPM_TOKEN` assigned to a value. A
+bare reference such as `process.env.GITHUB_TOKEN` is not flagged. To commit past a
+false positive, use `git commit --no-verify`.
+
+Detection is best-effort and not a substitute for keeping secrets out of Git.
+
+## Scope limitation
+
+GForge configures Git's global `core.hooksPath`. Git lets a repository-local or
+system `core.hooksPath` override the global one, so in a repository that sets its
+own hooks path (for example Husky or lefthook) the managed hook does not run.
+`gforge verify` warns when it detects such an override in the current repository.
+
 ## License
 
 Licensed under the Apache License, Version 2.0. Preserve the notice in `NOTICE` when redistributing.
