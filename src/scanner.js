@@ -59,7 +59,7 @@ const VALUE_REFERENCE_ROOT_RE = /^(process|import|globalThis|window|os|System|De
 
 // Decide whether the value assigned to a credential keyword is a hardcoded
 // literal (flag) rather than a reference/placeholder (ignore).
-export function looksLikeHardcodedSecret(rawValue) {
+export function looksLikeHardcodedSecret(rawValue, options = {}) {
   let value = String(rawValue).trim();
   const quote = value[0];
   const quoted = quote === '"' || quote === "'" || quote === "`";
@@ -79,6 +79,10 @@ export function looksLikeHardcodedSecret(rawValue) {
     if (value.startsWith("$")) return false;
     if (/[.(]/.test(value)) return false;
     if (VALUE_REFERENCE_ROOT_RE.test(value)) return false;
+    // In source code, an unquoted bare identifier (user.password = hashedPassword)
+    // is a variable reference, not a literal. In config/env/YAML files an unquoted
+    // bare word IS the literal value, so only exempt this for code files.
+    if (options.codeFile && /^[A-Za-z_$][\w$]*$/.test(value)) return false;
   }
   // Env-name-like placeholders (DB_PASSWORD) and common dummy values.
   if (/^[A-Z][A-Z0-9_]{2,}$/.test(value)) return false;
@@ -86,6 +90,22 @@ export function looksLikeHardcodedSecret(rawValue) {
   if (/^<.*>$/.test(value) || value === "...") return false;
 
   return true;
+}
+
+// Known source-code file types, where unquoted bare identifiers are variable
+// references. Anything else (.env, .yml, .ini, .properties, .txt, …) is treated
+// as a config/literal file.
+const CODE_EXTENSIONS = new Set([
+  "js", "jsx", "ts", "tsx", "mjs", "cjs", "py", "rb", "go", "java", "kt", "kts",
+  "php", "cs", "cpp", "cc", "cxx", "c", "h", "hpp", "rs", "swift", "scala", "dart",
+  "lua", "pl", "pm", "r", "mm", "vue", "svelte", "groovy", "clj", "ex", "exs"
+]);
+
+function isCodeFile(filePath) {
+  const name = basename(filePath).toLowerCase();
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0) return false;
+  return CODE_EXTENSIONS.has(name.slice(dot + 1));
 }
 
 // ---------------------------------------------------------------------------
@@ -210,6 +230,7 @@ export function scanText(filePath, content, options = {}) {
     looksBinary(content);
 
   const includeGeneric = options.generic !== false;
+  const codeFile = isCodeFile(filePath);
   const lines = content.split(/\r?\n/);
 
   for (let i = 0; i < lines.length; i += 1) {
@@ -225,7 +246,7 @@ export function scanText(filePath, content, options = {}) {
 
     if (includeGeneric) {
       const match = line.match(GENERIC_KEYWORD_RE);
-      if (match && looksLikeHardcodedSecret(match[1])) {
+      if (match && looksLikeHardcodedSecret(match[1], { codeFile })) {
         findings.push({
           file: filePath,
           line: lineNumber,

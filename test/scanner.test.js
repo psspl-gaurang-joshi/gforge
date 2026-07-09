@@ -47,6 +47,20 @@ test("still flags hardcoded credentials in config files (Sequelize-style)", () =
   assert.ok(ruleIds("config/db.js", "password: 'MyS3cretDbPass',").includes("generic-secret-assignment"));
 });
 
+test("in code, an unquoted bare identifier is a variable reference, not a literal", () => {
+  assert.equal(ruleIds("auth.js", "user.password = hashedPassword").length, 0);
+  assert.equal(ruleIds("auth.ts", "const password = hashedValue;").length, 0);
+  assert.equal(ruleIds("login.py", "password = user_input").length, 0);
+  // But a quoted literal in code is still a hardcoded secret.
+  assert.ok(ruleIds("auth.js", 'const password = "hunter2secret";').includes("generic-secret-assignment"));
+});
+
+test("in config/env/yaml files, an unquoted bare word is a literal and is flagged", () => {
+  assert.ok(ruleIds(".env", "PASSWORD=hunter2secret").includes("generic-secret-assignment"));
+  assert.ok(ruleIds("app.yml", "password: hunter2secret").includes("generic-secret-assignment"));
+  assert.ok(ruleIds("db.properties", "db.password=hunter2secret").includes("generic-secret-assignment"));
+});
+
 test("detects provider tokens and private keys", () => {
   assert.ok(ruleIds("a", `ghp_${"a".repeat(36)}`).includes("github-pat"));
   assert.ok(ruleIds("a", "AKIAIOSFODNN7EXAMPLE").includes("aws-access-key-id"));
