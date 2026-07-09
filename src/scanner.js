@@ -231,6 +231,10 @@ export function scanText(filePath, content, options = {}) {
 
   const includeGeneric = options.generic !== false;
   const codeFile = isCodeFile(filePath);
+  // Twilio auth tokens are bare 32-hex strings (no prefix), indistinguishable
+  // from an MD5 on their own. Only treat a 32-hex string as a token when the
+  // file also carries Twilio context (an AC…/SK… SID or the word "twilio").
+  const twilioContext = /twilio/i.test(content) || /\b(?:AC|SK)[0-9a-fA-F]{32}\b/.test(content);
   const lines = content.split(/\r?\n/);
 
   for (let i = 0; i < lines.length; i += 1) {
@@ -242,6 +246,15 @@ export function scanText(filePath, content, options = {}) {
       if (rule.regex.test(line)) {
         findings.push({ file: filePath, line: lineNumber, ruleId: rule.id, description: rule.description });
       }
+    }
+
+    if (twilioContext && /(?<![A-Za-z0-9])[0-9a-fA-F]{32}(?![A-Za-z0-9])/.test(line)) {
+      findings.push({
+        file: filePath,
+        line: lineNumber,
+        ruleId: "twilio-auth-token",
+        description: "possible Twilio auth token (32-hex value in a Twilio context)"
+      });
     }
 
     if (includeGeneric) {
@@ -331,6 +344,65 @@ function stagedOrWorkingFile(root, relPath) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// .env cross-reference: the highest-precision signal. Collect the actual secret
+// VALUES from the repo's (git-ignored) .env files, then flag any staged file
+// that hardcodes one of those values verbatim — the classic "copied the token
+// out of .env into the code" leak. Values are never printed.
+// ---------------------------------------------------------------------------
+const DOTENV_FILES = [
+  ".env", ".env.local", ".env.development", ".env.production",
+  ".env.staging", ".env.test", ".env.development.local", ".env.production.local"
+];
+const DOTENV_KEY_IS_SECRET = /(pass|pwd|secret|token|key|auth|cred|api|private|access|signature|salt)/i;
+const DOTENV_VALUE_STOPLIST = /^(true|false|null|none|undefined|localhost|127\.0\.0\.1|0\.0\.0\.0|development|production|staging|test|changeme|example|placeholder|your[_-].*|xxx+)$/i;
+
+function looksLikeDotenvSecret(key, value) {
+  if (value.length < 6) return false;
+  if (DOTENV_VALUE_STOPLIST.test(value)) return false;
+  if (/^\d+$/.test(value)) return false; // ports, ids
+  if (DOTENV_KEY_IS_SECRET.test(key)) return true;
+  // Otherwise only treat long, random-looking values as secrets.
+  return value.length >= 12 && /[A-Za-z]/.test(value) && /[0-9]/.test(value);
+}
+
+function loadDotenvSecrets() {
+  let root;
+  try {
+    root = git(["rev-parse", "--show-toplevel"]).toString("utf8").trim();
+  } catch {
+    return [];
+  }
+  const secrets = new Set();
+  for (const file of DOTENV_FILES) {
+    let text;
+    try {
+      text = readFileSync(`${root}/${file}`, "utf8");
+    } catch {
+      continue;
+    }
+    for (const line of text.split(/\r?\n/)) {
+      const match = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
+      if (!match) continue;
+      let value = match[2].trim();
+      const q = value[0];
+      if ((q === '"' || q === "'" || q === "`") && value.endsWith(q)) {
+        value = value.slice(1, -1);
+      } else {
+        value = value.split(/\s+#/)[0].trim(); // drop trailing inline comment
+      }
+      if (looksLikeDotenvSecret(match[1], value)) secrets.add(value);
+    }
+  }
+  return [...secrets];
+}
+
+function lineOfSubstring(content, needle) {
+  const index = content.indexOf(needle);
+  if (index === -1) return 0;
+  return content.slice(0, index).split(/\r?\n/).length;
+}
+
 // Optional turbo layer: if the gitleaks binary is installed, run it over the
 // staged changes and merge its verdict. Uses --redact so no secret is printed.
 function runGitleaks() {
@@ -356,6 +428,7 @@ function runGitleaks() {
 export function scanStaged(options = {}) {
   const allowlist = options.allowlist ?? loadAllowlist();
   const files = options.files ?? stagedFiles();
+  const dotenvSecrets = options.dotenvSecrets ?? loadDotenvSecrets();
   const findings = [];
 
   for (const file of files) {
@@ -368,6 +441,19 @@ export function scanStaged(options = {}) {
 
     const content = options.read ? options.read(file) : stagedContent(file);
     if (content === null || content === undefined) continue;
+
+    // Highest-precision check: a real secret value from .env hardcoded here.
+    for (const secret of dotenvSecrets) {
+      if (content.includes(secret)) {
+        findings.push({
+          file,
+          line: lineOfSubstring(content, secret),
+          ruleId: "hardcoded-dotenv-secret",
+          description: "a secret value from a .env file is hardcoded here"
+        });
+        break; // one is enough to block; do not enumerate values
+      }
+    }
 
     // Env templates are meant to hold placeholder values, so skip the generic
     // keyword and entropy rules for them, but still catch a real provider token.
