@@ -4,6 +4,17 @@
   "description": "Secure global Git hooks installer for developer workstations.",
   "license": "Apache-2.0",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/psspl-gaurang-joshi/gforge.git"
+  },
+  "bugs": {
+    "url": "https://github.com/psspl-gaurang-joshi/gforge/issues"
+  },
+  "homepage": "https://github.com/psspl-gaurang-joshi/gforge#readme",
+  "publishConfig": {
+    "access": "public"
+  },
   "bin": {
     "gforge": "./bin/gforge.js"
   },
@@ -20,6 +31,7 @@
   },
   "scripts": {
     "package:check": "npm pack --dry-run --cache .npm-cache",
-    "test": "node --test"
+    "test": "node --test",
+    "prepublishOnly": "node --test"
   }
 }

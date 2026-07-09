@@ -23,42 +23,15 @@ export async function runCli(args, streams, options = {}) {
   }
 
   if (command === "install") {
-    const result = await (options.installManagedHooks ?? installManagedHooks)(options);
-    const output = formatInstallResult(result);
-
-    if (result.ok) {
-      streams.stdout.write(output);
-    } else {
-      streams.stderr.write(output);
-    }
-
-    return { exitCode: result.exitCode };
+    return runMutation("install", options.installManagedHooks ?? installManagedHooks, options, streams);
   }
 
   if (command === "update") {
-    const result = await (options.updateManagedHooks ?? updateManagedHooks)(options);
-    const output = formatInstallResult(result);
-
-    if (result.ok) {
-      streams.stdout.write(output);
-    } else {
-      streams.stderr.write(output);
-    }
-
-    return { exitCode: result.exitCode };
+    return runMutation("update", options.updateManagedHooks ?? updateManagedHooks, options, streams);
   }
 
   if (command === "uninstall") {
-    const result = await (options.uninstallManagedHooks ?? uninstallManagedHooks)(options);
-    const output = formatInstallResult(result);
-
-    if (result.ok) {
-      streams.stdout.write(output);
-    } else {
-      streams.stderr.write(output);
-    }
-
-    return { exitCode: result.exitCode };
+    return runMutation("uninstall", options.uninstallManagedHooks ?? uninstallManagedHooks, options, streams);
   }
 
   if (command === "verify") {
@@ -75,6 +48,28 @@ export async function runCli(args, streams, options = {}) {
 
   streams.stderr.write(`Unknown command: ${command}\n\n${helpText()}`);
   return { exitCode: 1 };
+}
+
+// Runs a state-mutating command, turning any unexpected failure (permission
+// errors, an unwritable global gitconfig, etc.) into a friendly message and a
+// non-zero exit code instead of an unhandled rejection and a raw stack trace.
+async function runMutation(command, operation, options, streams) {
+  try {
+    const result = await operation(options);
+    const output = formatInstallResult(result);
+
+    if (result.ok) {
+      streams.stdout.write(output);
+    } else {
+      streams.stderr.write(output);
+    }
+
+    return { exitCode: result.exitCode };
+  } catch (error) {
+    const detail = error?.message ?? String(error);
+    streams.stderr.write(`GForge ${command} failed\n\n${detail}\n`);
+    return { exitCode: 1 };
+  }
 }
 
 function helpText() {

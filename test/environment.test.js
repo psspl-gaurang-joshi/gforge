@@ -31,6 +31,35 @@ test("detects supported Unix environment and Git", async () => {
   assert.equal(environment.git.version, "2.45.0");
 });
 
+test("does not mislabel every Windows process as PowerShell", async () => {
+  const environment = await detectEnvironment({
+    env: { PSModulePath: "C:/Modules", ComSpec: "C:/Windows/System32/cmd.exe" },
+    platform: "win32",
+    arch: "x64",
+    homeDirectory: "C:/Users/example",
+    execFile: async () => ({ stdout: "git version 2.45.0\n" })
+  });
+
+  assert.equal(environment.shell.name, "cmd.exe");
+});
+
+test("detects a pwsh session on Windows via its distribution channel marker", async () => {
+  const environment = await detectEnvironment({
+    env: {
+      PSModulePath: "C:/Modules",
+      POWERSHELL_DISTRIBUTION_CHANNEL: "MSI:Windows 10",
+      ComSpec: "C:/Windows/System32/cmd.exe"
+    },
+    platform: "win32",
+    arch: "x64",
+    homeDirectory: "C:/Users/example",
+    execFile: async () => ({ stdout: "git version 2.45.0\n" })
+  });
+
+  assert.equal(environment.shell.name, "pwsh");
+  assert.equal(environment.shell.supported, true);
+});
+
 test("reports missing Git without throwing", async () => {
   const environment = await detectEnvironment({
     env: { SHELL: "/bin/bash" },
