@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { runCli } from "../src/cli.js";
+
+const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 
 test("prints help by default", async () => {
   const result = await runCli([], createStreams());
@@ -14,7 +17,7 @@ test("prints version", async () => {
   const result = await runCli(["--version"], streams);
 
   assert.equal(result.exitCode, 0);
-  assert.match(streams.stdout.value, /^gforge 0\.1\.0\n$/);
+  assert.equal(streams.stdout.value, `gforge ${pkg.version}\n`);
 });
 
 test("runs managed hooks install", async () => {

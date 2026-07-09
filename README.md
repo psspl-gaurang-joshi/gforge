@@ -4,20 +4,33 @@
 [![node](https://img.shields.io/node/v/gforge.svg)](https://nodejs.org)
 [![license](https://img.shields.io/npm/l/gforge.svg)](LICENSE)
 
-Secure global Git hooks installer for developer workstations. GForge installs a
-managed global `pre-commit` hook that blocks commits containing secrets, across
-every repository on the machine, on macOS, Linux, and Windows.
+GForge is a **git firewall** for developer workstations. It installs a managed
+global `pre-commit` hook that blocks commits containing secrets — passwords, API
+keys, tokens, private keys, `.env` files, and high-entropy strings — across every
+repository on the machine, on macOS, Linux, and Windows.
 
-Install once, and every `git commit` on the workstation is checked before it can
-leak an API key, token, or private key.
+Install once, and every `git commit` on the workstation is scanned before it can
+leak a credential.
 
 ## Features
 
 - **One command, all repositories.** Configures Git's global `core.hooksPath`, so
-  the hook applies to every repo without per-project setup.
-- **Secret-aware pre-commit hook.** Scans only the files staged for the current
-  commit and blocks it when a likely secret is found. Reports file paths only,
-  never the matched value.
+  the firewall applies to every repo without per-project setup.
+- **Deep secret detection.** A comprehensive engine covers three layers:
+  - **Provider rules** — 25+ credential shapes (AWS, GitHub/GitLab, Google, Slack,
+    Stripe, Twilio, SendGrid, npm, PyPI, OpenAI, private keys, JWTs, DB URLs, …).
+  - **Generic secrets** — any credential keyword assigned to a value
+    (`DB_PASS=…`, `password: …`, `api_key = …`), so custom secrets are caught too.
+  - **Entropy** — high-entropy strings that have no recognizable variable name.
+- **Secret-file blocking.** `.env` (and `.env.*`, except templates like
+  `.env.example`), `id_rsa`, `*.p12`/`*.pfx`, keystores, `.npmrc`, and more.
+- **gitleaks turbo.** If the [gitleaks](https://github.com/gitleaks/gitleaks)
+  binary is installed, GForge also runs it and merges its findings — GForge's
+  engine works on its own, and gets even stronger when gitleaks is present.
+- **Never leaks the secret.** Reports only file paths, line numbers, and rule
+  names — the matched value is never printed.
+- **Managed false positives.** A `.gforgeignore` file and inline `gforge:allow`
+  comments let you silence known-safe matches.
 - **Cross-platform.** macOS (Bash/Zsh), Linux (Bash), and Windows (Git Bash / WSL).
 - **Safe lifecycle.** `install` is idempotent, `verify` is read-only, and
   `uninstall` removes only GForge-owned files and restores your prior Git config.
@@ -83,38 +96,67 @@ gforge verify
 # Install the managed global hooks
 gforge install
 
-# From now on, commits with a leaked secret are blocked:
-echo 'AWS_SECRET=AKIAIOSFODNN7EXAMPLE' > config.txt
+# From now on, commits containing a secret are blocked:
+echo 'DB_PASS=psspl@443e' > config.txt
 git add config.txt
 git commit -m "add config"
-# -> GForge blocks the commit and lists config.txt
+# -> GForge blocks the commit and lists config.txt (never printing the value)
 
 # Remove everything GForge installed
 gforge uninstall
 ```
 
-## How the managed pre-commit hook works
+## How detection works
 
 The `pre-commit` hook scans only the files staged for the current commit (not the
 whole repository) and blocks the commit if any appear to contain a secret. It
-reports file paths only and never prints the matched value.
+reports file paths, line numbers, and rule names — **never** the matched value.
 
-It flags common credential shapes — private keys, AWS access key IDs, GitHub and
-Google API keys, Stripe and npm tokens — plus `AWS_ACCESS_KEY_ID`,
-`AWS_SECRET_ACCESS_KEY`, `GITHUB_TOKEN`, and `NPM_TOKEN` assigned to a value. A
-bare reference such as `process.env.GITHUB_TOKEN` is not flagged. To commit past a
-false positive, use `git commit --no-verify`.
+Detection runs four layers:
+
+1. **Provider rules** — fixed credential shapes for AWS, GitHub, GitLab, Google,
+   Slack, Stripe, Twilio, SendGrid, Mailgun, npm, PyPI, OpenAI, Anthropic,
+   DigitalOcean, Shopify, Telegram, JWTs, PEM private keys, and URLs with embedded
+   credentials.
+2. **Generic secrets** — any credential keyword (`password`, `pass`, `pwd`,
+   `secret`, `token`, `api_key`, `access_key`, `client_secret`, `private_key`,
+   `credentials`, …) assigned to a value, e.g. `DB_PASS=…`. Bare references such as
+   `process.env.GITHUB_TOKEN` (no assigned value) are not flagged.
+3. **Entropy** — high-entropy strings with no recognizable name. Tuned to skip git
+   SHAs, UUIDs, and lockfiles.
+4. **Secret files** — `.env` and `.env.*` (except templates like `.env.example`),
+   `id_rsa`, `*.p12`/`*.pfx`, keystores, `.git-credentials`, `.netrc`, and more.
+
+If the [gitleaks](https://github.com/gitleaks/gitleaks) binary is on your `PATH`,
+GForge also runs `gitleaks protect --staged` and merges its verdict.
 
 Detection is best-effort and not a substitute for keeping secrets out of Git.
+
+## Managing false positives
+
+Maximum coverage means occasional false positives. Three escape hatches:
+
+- **Inline:** add a `gforge:allow` (or `gitleaks:allow`) comment on the line.
+- **Per-repo:** add a path or regex to a `.gforgeignore` file at the repo root
+  (a `.gitleaksignore` is also honored). Example:
+
+  ```gitignore
+  # .gforgeignore
+  test/fixtures/
+  ^docs/sample-config\.md$
+  ```
+
+- **One-off:** bypass a single commit with `git commit --no-verify`.
 
 ## Configuration and file layout
 
 GForge stores its files under the user's home directory and touches only global
 Git config:
 
-- `~/.gforge/hooks/` — managed hook scripts (`core.hooksPath` points here).
-- `~/.gforge/state.json` — records the prior `core.hooksPath` so `uninstall` can
-  restore it.
+- `~/.gforge/hooks/pre-commit` — the managed hook (a small shim).
+- `~/.gforge/hooks/gforge-scan.mjs` — the self-contained scanner engine.
+- `~/.gforge/state.json` — records the prior `core.hooksPath` and the Node path so
+  `uninstall` can restore your configuration.
 
 Git lets a repository-local or system `core.hooksPath` override the global one, so
 in a repository that sets its own hooks path (for example Husky or lefthook) the

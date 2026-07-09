@@ -1,0 +1,373 @@
+// GForge secret-scanning engine.
+//
+// This module is intentionally self-contained: it imports only Node built-ins,
+// so the installer can copy it verbatim into ~/.gforge/hooks and run it as a
+// pre-commit hook without depending on the globally installed package (whose
+// path changes across Node/nvm versions).
+//
+// It never prints matched secret values — only file paths, line numbers, and
+// rule identifiers.
+
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { basename } from "node:path";
+import { pathToFileURL } from "node:url";
+
+// ---------------------------------------------------------------------------
+// Provider / value-shape rules (high confidence). Ported and adapted from the
+// well-known gitleaks ruleset. Each regex is matched per line.
+// ---------------------------------------------------------------------------
+export const PROVIDER_RULES = [
+  { id: "private-key", description: "Private key block", regex: /-----BEGIN(?: [A-Z0-9]+)* PRIVATE KEY(?: BLOCK)?-----/ },
+  { id: "aws-access-key-id", description: "AWS access key ID", regex: /\b(?:AKIA|ASIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|A3T[A-Z0-9])[A-Z0-9]{16}\b/ },
+  { id: "github-pat", description: "GitHub personal access token", regex: /\bgh[pousr]_[A-Za-z0-9]{36,}\b/ },
+  { id: "github-fine-grained-pat", description: "GitHub fine-grained token", regex: /\bgithub_pat_[A-Za-z0-9_]{22,}\b/ },
+  { id: "gitlab-pat", description: "GitLab personal access token", regex: /\bglpat-[A-Za-z0-9_-]{20,}\b/ },
+  { id: "slack-token", description: "Slack token", regex: /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/ },
+  { id: "slack-app-token", description: "Slack app token", regex: /\bxapp-[0-9]-[A-Za-z0-9-]{10,}\b/ },
+  { id: "slack-webhook", description: "Slack webhook URL", regex: /https:\/\/hooks\.slack\.com\/services\/[A-Za-z0-9]+\/[A-Za-z0-9]+\/[A-Za-z0-9]+/ },
+  { id: "stripe-secret-key", description: "Stripe secret/restricted key", regex: /\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\b/ },
+  { id: "google-api-key", description: "Google API key", regex: /\bAIza[0-9A-Za-z_-]{35}\b/ },
+  { id: "gcp-oauth-secret", description: "Google OAuth client secret", regex: /\bGOCSPX-[A-Za-z0-9_-]{20,}\b/ },
+  { id: "twilio-api-key", description: "Twilio API key/SID", regex: /\b(?:SK|AC)[0-9a-fA-F]{32}\b/ },
+  { id: "sendgrid-key", description: "SendGrid API key", regex: /\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}\b/ },
+  { id: "mailgun-key", description: "Mailgun API key", regex: /\bkey-[0-9a-zA-Z]{32}\b/ },
+  { id: "mailchimp-key", description: "Mailchimp API key", regex: /\b[0-9a-f]{32}-us[0-9]{1,2}\b/ },
+  { id: "npm-token", description: "npm access token", regex: /\bnpm_[A-Za-z0-9]{36}\b/ },
+  { id: "pypi-token", description: "PyPI upload token", regex: /\bpypi-AgEIcHlwaS[A-Za-z0-9_-]{50,}\b/ },
+  { id: "openai-key", description: "OpenAI API key", regex: /\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b/ },
+  { id: "anthropic-key", description: "Anthropic API key", regex: /\bsk-ant-[A-Za-z0-9_-]{20,}\b/ },
+  { id: "digitalocean-token", description: "DigitalOcean token", regex: /\bdo[oprt]_v1_[a-f0-9]{64}\b/ },
+  { id: "doppler-token", description: "Doppler token", regex: /\bdp\.(?:pt|st|ct|sa)\.[A-Za-z0-9]{40,}\b/ },
+  { id: "shopify-token", description: "Shopify access token", regex: /\bshp(?:at|ca|pa|ss)_[a-fA-F0-9]{32}\b/ },
+  { id: "square-token", description: "Square access token", regex: /\b(?:sq0atp-[A-Za-z0-9_-]{22}|EAAA[A-Za-z0-9_-]{60})\b/ },
+  { id: "telegram-bot-token", description: "Telegram bot token", regex: /\b[0-9]{8,10}:AA[A-Za-z0-9_-]{33}\b/ },
+  { id: "jwt", description: "JSON Web Token", regex: /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/ },
+  { id: "basic-auth-url", description: "Credentials embedded in URL", regex: /\b[a-z][a-z0-9+.-]*:\/\/[^/\s:@]+:[^/\s:@]{3,}@/i },
+  {
+    id: "generic-secret-assignment",
+    description: "Secret-like value assigned to a credential keyword",
+    // A credential keyword (as its own token, e.g. DB_PASS, api-key, secret)
+    // assigned (= or :) to a non-trivial value. Bare references such as
+    // process.env.GITHUB_TOKEN (no assignment) are not matched.
+    regex: /(?:^|[^A-Za-z0-9])(?:passwd|password|passphrase|pwd|pass|secret(?:[_-]?key)?|token|access[_-]?token|auth[_-]?token|api[_-]?key|apikey|access[_-]?key|client[_-]?secret|private[_-]?key|encryption[_-]?key|credentials?)["'`]?\s*[:=]\s*["'`]?[^\s"'`]{4,}/i
+  }
+];
+
+// ---------------------------------------------------------------------------
+// Secret-file rules: files that should essentially never be committed. Matched
+// against the file's basename (and a couple of path suffixes).
+// ---------------------------------------------------------------------------
+const ALLOWED_ENV_SUFFIXES = new Set(["example", "sample", "template", "dist", "defaults", "tpl", "test"]);
+
+// True for env template files (.env.example, .env.sample, ...) that are meant
+// to be committed with placeholder values.
+export function isEnvTemplate(filePath) {
+  const name = basename(filePath).toLowerCase();
+  if (!name.startsWith(".env.")) return false;
+  return ALLOWED_ENV_SUFFIXES.has(name.slice(".env.".length));
+}
+
+export function matchFilenameRule(filePath) {
+  const name = basename(filePath).toLowerCase();
+
+  // Environment files, except obvious templates (.env.example, .env.sample, ...).
+  if (name === ".env") {
+    return { id: "secret-file-env", description: ".env file (may contain secrets)" };
+  }
+  if (name.startsWith(".env.")) {
+    const suffix = name.slice(".env.".length);
+    if (!ALLOWED_ENV_SUFFIXES.has(suffix)) {
+      return { id: "secret-file-env", description: "environment file (may contain secrets)" };
+    }
+  }
+
+  // Private key material and credential stores.
+  const exactNames = new Set([
+    "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519",
+    ".git-credentials", ".htpasswd", ".pgpass", ".netrc",
+    "credentials"
+  ]);
+  if (exactNames.has(name)) {
+    return { id: "secret-file", description: "credential/private-key file" };
+  }
+
+  const secretExtensions = [".p12", ".pfx", ".pkcs12", ".keystore", ".jks", ".ppk", ".kdbx"];
+  if (secretExtensions.some((ext) => name.endsWith(ext))) {
+    return { id: "secret-file", description: "keystore/credential file" };
+  }
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Entropy detection for high-entropy strings that carry no recognizable name.
+// ---------------------------------------------------------------------------
+const ENTROPY_MIN_LENGTH = 20;
+const ENTROPY_THRESHOLD = 4.2; // pure hex/decimal/UUID cannot reach this; base64-like secrets do.
+const ENTROPY_TOKEN = /[A-Za-z0-9+/=_-]{20,}/g;
+const LOCKFILE_NAMES = new Set([
+  "package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml",
+  "composer.lock", "gemfile.lock", "go.sum", "cargo.lock", "poetry.lock",
+  "podfile.lock", "flake.lock"
+]);
+
+export function shannonEntropy(str) {
+  if (!str) return 0;
+  const freq = new Map();
+  for (const ch of str) freq.set(ch, (freq.get(ch) || 0) + 1);
+  let entropy = 0;
+  for (const count of freq.values()) {
+    const p = count / str.length;
+    entropy -= p * Math.log2(p);
+  }
+  return entropy;
+}
+
+function looksBinary(content) {
+  const sample = content.slice(0, 8000);
+  let control = 0;
+  for (let i = 0; i < sample.length; i += 1) {
+    const code = sample.charCodeAt(i);
+    if (code === 0) return true;
+    if (code < 9 || (code > 13 && code < 32)) control += 1;
+  }
+  return control / (sample.length || 1) > 0.3;
+}
+
+// ---------------------------------------------------------------------------
+// Allowlist: a .gforgeignore (or .gitleaksignore) file whose non-comment lines
+// are path substrings/regexes to skip, plus inline `gforge:allow` comments.
+// ---------------------------------------------------------------------------
+const INLINE_ALLOW = /(?:gforge|gitleaks):allow/i;
+
+export function parseAllowlist(text) {
+  if (!text) return [];
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#"))
+    .map((line) => {
+      try {
+        return new RegExp(line);
+      } catch {
+        // Not a valid regex: treat as a literal path substring.
+        return { test: (value) => value.includes(line) };
+      }
+    });
+}
+
+function isPathAllowlisted(filePath, allowlist) {
+  return allowlist.some((matcher) => matcher.test(filePath));
+}
+
+// ---------------------------------------------------------------------------
+// Core text scanner.
+// ---------------------------------------------------------------------------
+export function scanText(filePath, content, options = {}) {
+  const findings = [];
+  const name = basename(filePath).toLowerCase();
+  const skipEntropy =
+    options.entropy === false ||
+    LOCKFILE_NAMES.has(name) ||
+    name.endsWith(".min.js") ||
+    name.endsWith(".min.css") ||
+    name.endsWith(".map") ||
+    looksBinary(content);
+
+  const includeGeneric = options.generic !== false;
+  const lines = content.split(/\r?\n/);
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (INLINE_ALLOW.test(line)) continue;
+    const lineNumber = i + 1;
+
+    for (const rule of PROVIDER_RULES) {
+      if (rule.id === "generic-secret-assignment" && !includeGeneric) continue;
+      if (rule.regex.test(line)) {
+        findings.push({ file: filePath, line: lineNumber, ruleId: rule.id, description: rule.description });
+      }
+    }
+
+    if (!skipEntropy) {
+      const tokens = line.match(ENTROPY_TOKEN);
+      if (tokens) {
+        for (const token of tokens) {
+          if (token.length < ENTROPY_MIN_LENGTH) continue;
+          if (shannonEntropy(token) >= ENTROPY_THRESHOLD) {
+            findings.push({
+              file: filePath,
+              line: lineNumber,
+              ruleId: "high-entropy-string",
+              description: "high-entropy string with no recognizable name"
+            });
+            break; // one entropy finding per line is enough
+          }
+        }
+      }
+    }
+  }
+
+  return findings;
+}
+
+// ---------------------------------------------------------------------------
+// Git integration.
+// ---------------------------------------------------------------------------
+function git(args, options = {}) {
+  // Capture stdout; silence stderr so expected failures (e.g. `git show` for a
+  // path that is not staged) do not spew "fatal:" noise on every commit.
+  return execFileSync("git", args, {
+    maxBuffer: 1024 * 1024 * 512,
+    stdio: ["ignore", "pipe", "ignore"],
+    ...options
+  });
+}
+
+function stagedFiles() {
+  // -z emits raw NUL-delimited paths (no quoting/escaping), so no core.quotePath needed.
+  const out = git(["diff", "--cached", "-z", "--name-only", "--diff-filter=ACMR"]);
+  return out.toString("utf8").split("\0").filter(Boolean);
+}
+
+function stagedContent(filePath) {
+  try {
+    return git(["show", `:${filePath}`]).toString("latin1");
+  } catch {
+    return null; // submodule/gitlink or unreadable; nothing to scan.
+  }
+}
+
+function loadAllowlist() {
+  let root;
+  try {
+    root = git(["rev-parse", "--show-toplevel"]).toString("utf8").trim();
+  } catch {
+    return [];
+  }
+  const patterns = [];
+  for (const file of [".gforgeignore", ".gitleaksignore"]) {
+    const content = stagedOrWorkingFile(root, file);
+    if (content) patterns.push(...parseAllowlist(content));
+  }
+  return patterns;
+}
+
+function stagedOrWorkingFile(root, relPath) {
+  // Prefer the staged version, fall back to the working tree.
+  const staged = stagedContent(relPath);
+  if (staged !== null) return staged;
+  try {
+    return readFileSync(`${root}/${relPath}`, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+// Optional turbo layer: if the gitleaks binary is installed, run it over the
+// staged changes and merge its verdict. Uses --redact so no secret is printed.
+function runGitleaks() {
+  try {
+    execFileSync("gitleaks", ["version"], { stdio: "ignore" });
+  } catch {
+    return { available: false, leaks: false };
+  }
+
+  try {
+    execFileSync("gitleaks", ["protect", "--staged", "--redact", "--no-banner"], { stdio: "pipe" });
+    return { available: true, leaks: false };
+  } catch (error) {
+    if (error && error.status === 1) {
+      return { available: true, leaks: true };
+    }
+    // Unsupported subcommand on a newer/older gitleaks, or another error:
+    // do not block on gitleaks itself; the native engine still ran.
+    return { available: true, leaks: false, errored: true };
+  }
+}
+
+export function scanStaged(options = {}) {
+  const allowlist = options.allowlist ?? loadAllowlist();
+  const files = options.files ?? stagedFiles();
+  const findings = [];
+
+  for (const file of files) {
+    if (isPathAllowlisted(file, allowlist)) continue;
+
+    const fileRule = matchFilenameRule(file);
+    if (fileRule) {
+      findings.push({ file, line: 0, ruleId: fileRule.id, description: fileRule.description });
+    }
+
+    const content = options.read ? options.read(file) : stagedContent(file);
+    if (content === null || content === undefined) continue;
+
+    // Env templates are meant to hold placeholder values, so skip the generic
+    // keyword and entropy rules for them, but still catch a real provider token.
+    const fileOptions = isEnvTemplate(file) ? { ...options, generic: false, entropy: false } : options;
+    findings.push(...scanText(file, content, fileOptions));
+  }
+
+  const gitleaks = options.runGitleaks === false ? { available: false, leaks: false } : runGitleaks();
+  return { findings, gitleaks };
+}
+
+// ---------------------------------------------------------------------------
+// Reporting (never prints matched values).
+// ---------------------------------------------------------------------------
+export function formatReport({ findings, gitleaks }) {
+  const lines = [];
+  lines.push("GForge blocked this commit — potential secrets detected in staged changes.");
+  lines.push("");
+
+  const byFile = new Map();
+  for (const f of findings) {
+    if (!byFile.has(f.file)) byFile.set(f.file, []);
+    byFile.get(f.file).push(f);
+  }
+
+  for (const [file, fileFindings] of byFile) {
+    lines.push(`  ${file}`);
+    for (const f of fileFindings) {
+      const where = f.line > 0 ? `line ${f.line}` : "file";
+      lines.push(`    - [${f.ruleId}] ${f.description} (${where})`);
+    }
+  }
+
+  if (gitleaks?.leaks) {
+    lines.push("  (gitleaks also reported findings in the staged changes)");
+  }
+
+  lines.push("");
+  lines.push("No secret values are printed above. To proceed you can:");
+  lines.push("  - remove the secret from the staged change, or");
+  lines.push("  - mark a false positive with an inline `gforge:allow` comment, or");
+  lines.push("  - add a path/pattern to a .gforgeignore file, or");
+  lines.push("  - bypass this one commit with: git commit --no-verify");
+  return `${lines.join("\n")}\n`;
+}
+
+export function runPreCommit(write = (s) => process.stderr.write(s)) {
+  const result = scanStaged();
+  const blocked = result.findings.length > 0 || result.gitleaks?.leaks;
+  if (blocked) {
+    write(formatReport(result));
+    return 1;
+  }
+  return 0;
+}
+
+// Run as a hook when executed directly (e.g. ~/.gforge/hooks/gforge-scan.mjs).
+const invokedDirectly =
+  process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (invokedDirectly) {
+  try {
+    process.exit(runPreCommit());
+  } catch (error) {
+    // Fail closed: if the scanner cannot run, block rather than risk a leak.
+    process.stderr.write(`GForge: secret scan could not complete, blocking commit for safety.\n${error?.message ?? error}\n`);
+    process.exit(1);
+  }
+}
