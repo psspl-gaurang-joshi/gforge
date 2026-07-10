@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  decodeBlob,
   formatReport,
   isEnvTemplate,
   matchFilenameRule,
@@ -160,6 +161,23 @@ test("cross-references staged code against .env secret values", () => {
     files: ["clean.js"], read: () => "const answer = 42;"
   });
   assert.equal(clean.findings.length, 0);
+});
+
+test("decodes UTF-16/BOM blobs so Windows/PowerShell files are scanned", () => {
+  const secret = "password=SuperSecretValue123";
+  const utf16le = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(`${secret}\n`, "utf16le")]);
+  assert.equal(decodeBlob(utf16le).includes(secret), true);
+  // A real secret in a UTF-16 file must be detected once decoded.
+  assert.ok(scanText("config.txt", decodeBlob(utf16le), { runGitleaks: false }).some((f) => f.ruleId === "generic-secret-assignment"));
+  // UTF-8 with BOM and plain UTF-8 both round-trip.
+  assert.equal(decodeBlob(Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(secret)])), secret);
+  assert.equal(decodeBlob(Buffer.from(secret)), secret);
+});
+
+test("does not flag trivial non-secret values (PASS=123)", () => {
+  assert.equal(ruleIds("config.txt", "PASS=123").length, 0);
+  assert.equal(ruleIds("config.txt", "PORT=3000").length, 0);
+  assert.equal(ruleIds("config.txt", "DEBUG=true").length, 0);
 });
 
 test("shannon entropy scores random strings above plain text", () => {
