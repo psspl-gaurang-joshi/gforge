@@ -2,6 +2,7 @@ import { chmod, mkdir, readFile, rename, rmdir, stat, unlink, writeFile } from "
 import { join } from "node:path";
 
 import { detectEnvironment } from "./environment.js";
+import { VERSION } from "./metadata.js";
 import {
   getEffectiveHooksPath,
   getGlobalHooksPath,
@@ -9,13 +10,17 @@ import {
   unsetGlobalHooksPath
 } from "./git-config.js";
 import {
-  MANAGED_HOOKS,
+  MANAGED_FILE_NAMES,
+  PRE_COMMIT_FILE_NAME,
+  SCANNER_FILE_NAME,
+  getManagedFiles,
+  getScannerContent,
   resolveHooksDirectory,
   resolveManagedDirectory,
+  resolvePreCommitPath,
+  resolveScannerPath,
   resolveStatePath
 } from "./hooks.js";
-
-const EXECUTABLE_MODE = 0o755;
 
 export async function installManagedHooks(options = {}) {
   const environment = options.environment ?? (await detectEnvironment(options));
@@ -33,14 +38,15 @@ export async function installManagedHooks(options = {}) {
   }
 
   const homePath = environment.home.path;
+  const nodePath = options.nodePath ?? process.execPath;
   const managedDirectory = resolveManagedDirectory(homePath);
   const hooksDirectory = resolveHooksDirectory(homePath);
   const statePath = resolveStatePath(homePath);
   const previousHooksPath = await getGlobalHooksPath(execFileFn);
 
   await mkdir(hooksDirectory, { recursive: true, mode: 0o700 });
-  await writeManagedHooks(hooksDirectory);
-  await writeInstallState(statePath, hooksDirectory, previousHooksPath);
+  await writeManagedFiles(hooksDirectory, nodePath);
+  await writeInstallState(statePath, hooksDirectory, previousHooksPath, nodePath);
   await setGlobalHooksPath(hooksDirectory, execFileFn);
 
   return {
@@ -179,16 +185,62 @@ export async function verifyManagedHooks(options = {}) {
 
   checks.push(await checkDirectory(hooksDirectory));
 
-  for (const [name, expectedContent] of MANAGED_HOOKS) {
-    const hookPath = join(hooksDirectory, name);
-    checks.push(await checkHookContent(name, hookPath, expectedContent));
-    checks.push(await checkHookExecutable(name, hookPath, environment.platform.name));
-  }
+  const scannerPath = resolveScannerPath(environment.home.path);
+  checks.push(await checkScannerContent(scannerPath));
+
+  const preCommitPath = resolvePreCommitPath(environment.home.path);
+  checks.push(await checkPreCommitShim(preCommitPath));
+  checks.push(await checkHookExecutable(PRE_COMMIT_FILE_NAME, preCommitPath, environment.platform.name));
 
   return {
     hooksDirectory,
     checks
   };
+}
+
+// Compares the installed engine against the current package's engine. A mismatch
+// almost always means the package was upgraded but the hook was not refreshed,
+// so the message points straight at the fix.
+async function checkScannerContent(scannerPath) {
+  const expected = getScannerContent();
+  try {
+    const actual = await readFile(scannerPath, "utf8");
+    if (actual === expected) {
+      return { status: "PASS", label: `${SCANNER_FILE_NAME}-content`, detail: "managed content matches" };
+    }
+    return {
+      status: "FAIL",
+      label: `${SCANNER_FILE_NAME}-content`,
+      detail: "installed engine is stale or modified — run `gforge update`"
+    };
+  } catch {
+    return {
+      status: "FAIL",
+      label: `${SCANNER_FILE_NAME}-content`,
+      detail: "engine not found — run `gforge update`"
+    };
+  }
+}
+
+// The pre-commit shim embeds a machine-specific Node path, so verify checks its
+// structure (present and delegating to the managed scanner) rather than an
+// exact byte match.
+async function checkPreCommitShim(preCommitPath) {
+  try {
+    const content = await readFile(preCommitPath, "utf8");
+    const wired = content.includes(SCANNER_FILE_NAME) && content.includes("exec");
+    return {
+      status: wired ? "PASS" : "FAIL",
+      label: `${PRE_COMMIT_FILE_NAME}-content`,
+      detail: wired ? "delegates to managed scanner" : "does not delegate to managed scanner"
+    };
+  } catch {
+    return {
+      status: "FAIL",
+      label: `${PRE_COMMIT_FILE_NAME}-content`,
+      detail: `${preCommitPath} not found`
+    };
+  }
 }
 
 export function formatInstallResult(result) {
@@ -229,10 +281,9 @@ function validateUninstallPreflight(environment) {
   return messages;
 }
 
-async function writeManagedHooks(hooksDirectory) {
-  for (const [name, content] of MANAGED_HOOKS) {
-    const hookPath = join(hooksDirectory, name);
-    await writeFileAtomic(hookPath, content, EXECUTABLE_MODE);
+async function writeManagedFiles(hooksDirectory, nodePath) {
+  for (const file of getManagedFiles(nodePath)) {
+    await writeFileAtomic(join(hooksDirectory, file.name), file.content, file.mode);
   }
 }
 
@@ -246,7 +297,7 @@ async function writeFileAtomic(filePath, content, mode) {
 }
 
 async function removeManagedFiles(hooksDirectory, statePath) {
-  for (const name of MANAGED_HOOKS.keys()) {
+  for (const name of MANAGED_FILE_NAMES) {
     await removeFile(join(hooksDirectory, name));
   }
 
@@ -280,7 +331,7 @@ async function removeEmptyDirectory(directoryPath) {
   }
 }
 
-async function writeInstallState(statePath, hooksDirectory, currentHooksPath) {
+async function writeInstallState(statePath, hooksDirectory, currentHooksPath, nodePath) {
   const { corrupt, state: existingState } = await readStateFile(statePath);
 
   if (corrupt) {
@@ -301,9 +352,11 @@ async function writeInstallState(statePath, hooksDirectory, currentHooksPath) {
   }
 
   const state = {
-    version: 1,
+    version: 2,
     managedBy: "gforge",
+    gforgeVersion: VERSION,
     hooksDirectory,
+    nodePath: nodePath ?? null,
     previousCoreHooksPath
   };
 
@@ -368,23 +421,6 @@ async function checkDirectory(hooksDirectory) {
       status: "FAIL",
       label: "hooks-directory",
       detail: `${hooksDirectory} not found`
-    };
-  }
-}
-
-async function checkHookContent(name, hookPath, expectedContent) {
-  try {
-    const actualContent = await readFile(hookPath, "utf8");
-    return {
-      status: actualContent === expectedContent ? "PASS" : "FAIL",
-      label: `${name}-content`,
-      detail: actualContent === expectedContent ? "managed content matches" : "managed content differs"
-    };
-  } catch {
-    return {
-      status: "FAIL",
-      label: `${name}-content`,
-      detail: `${hookPath} not found`
     };
   }
 }
