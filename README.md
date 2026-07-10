@@ -45,11 +45,18 @@ leak a credential.
 
 ## Installation
 
-Install globally from npm:
+That's it — one command:
 
 ```bash
 npm install -g gforge
 ```
+
+Installing globally **automatically sets up the hooks** for every repository on
+the machine (via a postinstall step) — no separate `gforge install` needed. From
+that moment, every `git commit` is scanned for secrets. (If a custom global
+`core.hooksPath` is already set, GForge leaves it alone and asks you to run
+`gforge install` to take it over. Auto-setup is skipped in CI and can be disabled
+with `GFORGE_SKIP_POSTINSTALL=1`.)
 
 <details>
 <summary>Other install methods</summary>
@@ -74,12 +81,6 @@ npm link
 
 </details>
 
-After installing, run it once to set up the global hooks:
-
-```bash
-gforge install
-```
-
 ## Upgrading
 
 `gforge update` is a self-upgrader — it checks npm for a newer version, installs
@@ -95,23 +96,24 @@ install -g gforge` still works too, and its postinstall auto-refreshes the hook.
 
 ### Auto-update
 
-By default, when a newer version exists GForge prints a one-line notice on commit
-(and on `gforge verify`):
+GForge keeps itself current automatically. When a newer version exists, it
+background-installs it **and** prints a one-line notice on commit (and on
+`gforge verify`):
 
 ```
 gforge: v1.2.3 is available (you have v1.2.2). Run: gforge update
 ```
 
 The version check runs at most once a day in a **detached background process** —
-it never delays or blocks a commit, and works offline (it just skips). To make
-upgrades fully automatic, opt in:
+it never delays or blocks a commit, and works offline (it just skips). The
+background install happens out of band, so your commit is never held up.
+
+Controls:
 
 ```bash
-export GFORGE_AUTO_UPDATE=1   # background-installs new versions when found
+export GFORGE_AUTO_UPDATE=0    # notify only; don't auto-install (default: auto-install on)
+export GFORGE_NO_SELF_UPDATE=1 # don't self-upgrade in `install`/`update` (CI / air-gapped)
 ```
-
-Set `GFORGE_NO_SELF_UPDATE=1` to disable the npm self-upgrade in `install`/`update`
-(e.g. in CI or air-gapped environments).
 
 ## Usage
 
