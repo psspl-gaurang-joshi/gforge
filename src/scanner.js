@@ -627,9 +627,15 @@ async function runUpdateCheck() {
     // ignore
   }
 
-  if (latest && RUNNING_VERSION[0] !== "_" && versionIsNewer(latest, RUNNING_VERSION) && process.env.GFORGE_AUTO_UPDATE) {
+  // Auto-install is ON by default; opt out with GFORGE_AUTO_UPDATE=0/false/off/no.
+  const optOut = ["0", "false", "off", "no"].includes(String(process.env.GFORGE_AUTO_UPDATE || "").toLowerCase());
+  const safeVersion = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(String(latest || ""));
+  if (latest && safeVersion && !optOut && RUNNING_VERSION[0] !== "_" && versionIsNewer(latest, RUNNING_VERSION)) {
     try {
-      const npm = spawn("npm", ["install", "-g", `gforge@${latest}`], { stdio: "ignore" });
+      const npm = spawn("npm", ["install", "-g", `gforge@${latest}`], {
+        stdio: "ignore",
+        shell: process.platform === "win32"
+      });
       await new Promise((resolve) => npm.on("close", resolve).on("error", resolve));
     } catch {
       // ignore; the notice will still prompt a manual `gforge update`.
