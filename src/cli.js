@@ -7,6 +7,12 @@ import {
   updateManagedHooks,
   verifyManagedHooks
 } from "./installer.js";
+import {
+  getLatestVersion,
+  isNewer,
+  performSelfUpgrade,
+  readCachedUpdateNotice
+} from "./npm-update.js";
 import { createVerificationReport, formatVerificationReport } from "./verify.js";
 
 export async function runCli(args, streams, options = {}) {
@@ -22,12 +28,8 @@ export async function runCli(args, streams, options = {}) {
     return { exitCode: 0 };
   }
 
-  if (command === "install") {
-    return runMutation("install", options.installManagedHooks ?? installManagedHooks, options, streams);
-  }
-
-  if (command === "update") {
-    return runMutation("update", options.updateManagedHooks ?? updateManagedHooks, options, streams);
+  if (command === "install" || command === "update") {
+    return runInstallOrUpdate(command, args, options, streams);
   }
 
   if (command === "uninstall") {
@@ -43,11 +45,54 @@ export async function runCli(args, streams, options = {}) {
     const report = createVerificationReport(environment, managedHooksReport);
 
     streams.stdout.write(formatVerificationReport(report));
+    const notice = (options.readCachedUpdateNotice ?? readCachedUpdateNotice)(VERSION);
+    if (notice) streams.stdout.write(`\n${notice}\n`);
     return { exitCode: report.exitCode };
   }
 
   streams.stderr.write(`Unknown command: ${command}\n\n${helpText()}`);
   return { exitCode: 1 };
+}
+
+// install/update first try to upgrade the globally installed package to the
+// latest published version (unless disabled), then apply the managed hooks. With
+// --force, it reinstalls the latest even when already current.
+async function runInstallOrUpdate(command, args, options, streams) {
+  const force = args.includes("--force") || args.includes("-f");
+  const selfUpdateDisabled = Boolean(process.env.GFORGE_NO_SELF_UPDATE) || options.skipSelfUpdate;
+
+  if (!selfUpdateDisabled) {
+    const latest = await (options.getLatestVersion ?? getLatestVersion)(options);
+
+    if (latest && (isNewer(latest, VERSION) || force)) {
+      const upgrading = isNewer(latest, VERSION);
+      streams.stdout.write(
+        upgrading
+          ? `GForge: upgrading ${VERSION} → ${latest}...\n`
+          : `GForge: reinstalling gforge@${latest} (forced)...\n`
+      );
+      try {
+        const result = await (options.performSelfUpgrade ?? performSelfUpgrade)(command, latest, options);
+        if (result.ok) {
+          if (!result.reexeced) {
+            streams.stdout.write(`GForge ${command} complete\n\nNow running gforge@${latest}.\n`);
+          }
+          return { exitCode: 0 };
+        }
+        streams.stderr.write(`GForge: upgrade failed (${result.error ?? "unknown"}); continuing with ${VERSION}.\n`);
+      } catch (error) {
+        streams.stderr.write(`GForge: upgrade failed (${error?.message ?? error}); continuing with ${VERSION}.\n`);
+      }
+      // Fall through: set up hooks with the currently installed version.
+    } else if (latest && !isNewer(latest, VERSION)) {
+      streams.stdout.write(`GForge: already on the latest version (${VERSION}).\n`);
+    }
+  }
+
+  const operation = command === "install"
+    ? (options.installManagedHooks ?? installManagedHooks)
+    : (options.updateManagedHooks ?? updateManagedHooks);
+  return runMutation(command, operation, options, streams);
 }
 
 // Runs a state-mutating command, turning any unexpected failure (permission
@@ -78,14 +123,21 @@ function helpText() {
 Secure global Git hooks installer for developer workstations.
 
 Usage:
-  gforge <command>
+  gforge <command> [options]
 
 Commands:
-  install     Install managed global Git hooks
+  install     Upgrade to the latest published version (if any) and install hooks
   verify      Verify environment and managed hooks
-  update      Update managed hooks
+  update      Upgrade to the latest published version (if any) and refresh hooks
   uninstall   Remove GForge-owned hooks and configuration
   version     Print version
   help        Print help
+
+Options:
+  --force     With install/update, reinstall the latest version even if current
+
+Environment:
+  GFORGE_AUTO_UPDATE=1     Auto-install new versions in the background on commit
+  GFORGE_NO_SELF_UPDATE=1  Skip the npm self-upgrade in install/update
 `;
 }

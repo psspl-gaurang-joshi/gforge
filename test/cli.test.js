@@ -23,6 +23,7 @@ test("prints version", async () => {
 test("runs managed hooks install", async () => {
   const streams = createStreams();
   const result = await runCli(["install"], streams, {
+    skipSelfUpdate: true,
     installManagedHooks: async () => ({
       ok: true,
       exitCode: 0,
@@ -39,6 +40,7 @@ test("runs managed hooks install", async () => {
 test("runs managed hooks update", async () => {
   const streams = createStreams();
   const result = await runCli(["update"], streams, {
+    skipSelfUpdate: true,
     updateManagedHooks: async () => ({
       ok: true,
       command: "update",
@@ -71,6 +73,7 @@ test("runs managed hooks uninstall", async () => {
 test("runs read-only verification", async () => {
   const streams = createStreams();
   const result = await runCli(["verify"], streams, {
+    readCachedUpdateNotice: () => null,
     detectEnvironment: async () => ({
       platform: { name: "darwin", arch: "arm64", supported: true, isWsl: false },
       home: { path: "/Users/example", present: true },
@@ -99,6 +102,7 @@ test("runs read-only verification", async () => {
 test("fails verification when git is unavailable", async () => {
   const streams = createStreams();
   const result = await runCli(["verify"], streams, {
+    readCachedUpdateNotice: () => null,
     detectEnvironment: async () => ({
       platform: { name: "darwin", arch: "arm64", supported: true, isWsl: false },
       home: { path: "/Users/example", present: true },
@@ -118,6 +122,7 @@ test("fails verification when git is unavailable", async () => {
 test("reports a friendly error when a mutating command throws", async () => {
   const streams = createStreams();
   const result = await runCli(["install"], streams, {
+    skipSelfUpdate: true,
     installManagedHooks: async () => {
       throw new Error("EACCES: permission denied, mkdir '/root/.gforge'");
     }
@@ -127,6 +132,72 @@ test("reports a friendly error when a mutating command throws", async () => {
   assert.match(streams.stderr.value, /GForge install failed/);
   assert.match(streams.stderr.value, /permission denied/);
   assert.equal(streams.stdout.value, "");
+});
+
+test("install self-upgrades when a newer version is published", async () => {
+  const streams = createStreams();
+  const calls = [];
+  const result = await runCli(["install"], streams, {
+    getLatestVersion: async () => "999.0.0",
+    performSelfUpgrade: async (command, version) => {
+      calls.push({ command, version });
+      return { ok: true, reexeced: true };
+    },
+    installManagedHooks: async () => {
+      throw new Error("should not run local install after a successful upgrade");
+    }
+  });
+
+  assert.equal(result.exitCode, 0);
+  assert.deepEqual(calls, [{ command: "install", version: "999.0.0" }]);
+  assert.match(streams.stdout.value, /upgrading .* → 999\.0\.0/);
+});
+
+test("--force reinstalls the latest even when already current", async () => {
+  const streams = createStreams();
+  const calls = [];
+  const result = await runCli(["update", "--force"], streams, {
+    getLatestVersion: async () => pkg.version, // same as installed
+    performSelfUpgrade: async (command, version) => {
+      calls.push({ command, version });
+      return { ok: true, reexeced: true };
+    }
+  });
+
+  assert.equal(result.exitCode, 0);
+  assert.deepEqual(calls, [{ command: "update", version: pkg.version }]);
+  assert.match(streams.stdout.value, /reinstalling gforge@.* \(forced\)/);
+});
+
+test("skips upgrade and refreshes locally when already on the latest", async () => {
+  const streams = createStreams();
+  let upgraded = false;
+  const result = await runCli(["update"], streams, {
+    getLatestVersion: async () => pkg.version,
+    performSelfUpgrade: async () => {
+      upgraded = true;
+      return { ok: true };
+    },
+    updateManagedHooks: async () => ({ ok: true, command: "update", exitCode: 0, messages: ["Updated"] })
+  });
+
+  assert.equal(result.exitCode, 0);
+  assert.equal(upgraded, false);
+  assert.match(streams.stdout.value, /already on the latest version/);
+  assert.match(streams.stdout.value, /GForge update complete/);
+});
+
+test("falls back to a local install when the upgrade fails", async () => {
+  const streams = createStreams();
+  const result = await runCli(["install"], streams, {
+    getLatestVersion: async () => "999.0.0",
+    performSelfUpgrade: async () => ({ ok: false, error: "npm exited with status 1" }),
+    installManagedHooks: async () => ({ ok: true, exitCode: 0, messages: ["Installed"] })
+  });
+
+  assert.equal(result.exitCode, 0);
+  assert.match(streams.stderr.value, /upgrade failed/);
+  assert.match(streams.stdout.value, /GForge install complete/);
 });
 
 test("rejects unknown commands", async () => {
