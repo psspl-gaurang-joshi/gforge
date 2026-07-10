@@ -1,121 +1,87 @@
 # GForge
 
+> **Governance Forge** — an engineering governance platform that helps teams forge
+> consistent development standards through Git automation, quality gates, and
+> developer tooling.
+
 [![npm version](https://img.shields.io/npm/v/gforge.svg)](https://www.npmjs.com/package/gforge)
 [![node](https://img.shields.io/node/v/gforge.svg)](https://nodejs.org)
+[![platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-informational)](#cross-platform-support)
 [![license](https://img.shields.io/npm/l/gforge.svg)](LICENSE)
 
-GForge is a **git firewall** for developer workstations. It installs a managed
-global `pre-commit` hook that blocks commits containing secrets — passwords, API
-keys, tokens, private keys, `.env` files, and high-entropy strings — across every
-repository on the machine, on macOS, Linux, and Windows.
+GForge brings engineering standards to the one place every change passes through:
+the commit. Its first governance capability is a **secret firewall** — a managed
+global Git hook that stops credentials from ever entering your history, on every
+repository, across your whole team.
 
-Install once, and every `git commit` on the workstation is scanned before it can
-leak a credential.
+---
+
+## Why GForge
+
+A single leaked API key, database password, or private key in a commit can mean a
+production incident, a costly rotation, and a permanent entry in Git history.
+Per-project hooks drift, get skipped, or are never installed. GForge makes the
+guardrail **global, automatic, and uniform** for every developer and every repo —
+so the standard is enforced by default, not by discipline.
 
 ## Features
 
-- **One command, all repositories.** Configures Git's global `core.hooksPath`, so
-  the firewall applies to every repo without per-project setup.
-- **Deep secret detection.** A comprehensive engine covers several layers:
-  - **`.env` cross-reference** — blocks any staged file that hardcodes a real secret
-    value found in your git-ignored `.env` files (e.g. a token pasted out of `.env`).
-  - **Provider rules** — 25+ credential shapes (AWS, GitHub/GitLab, Google, Slack,
-    Stripe, Twilio, SendGrid, npm, PyPI, OpenAI, private keys, JWTs, DB URLs, …).
-  - **Generic secrets** — any credential keyword assigned to a value
-    (`DB_PASS=…`, `password: …`, `api_key = …`), so custom secrets are caught too.
-  - **Entropy** — high-entropy strings that have no recognizable variable name.
-- **Secret-file blocking.** `.env` (and `.env.*`, except templates like
-  `.env.example`), `id_rsa`, `*.p12`/`*.pfx`, keystores, `.npmrc`, and more.
-- **gitleaks turbo.** If the [gitleaks](https://github.com/gitleaks/gitleaks)
-  binary is installed, GForge also runs it and merges its findings — GForge's
-  engine works on its own, and gets even stronger when gitleaks is present.
-- **Never leaks the secret.** Reports only file paths, line numbers, and rule
-  names — the matched value is never printed.
-- **Managed false positives.** A `.gforgeignore` file and inline `gforge:allow`
-  comments let you silence known-safe matches.
-- **Cross-platform.** macOS (Bash/Zsh), Linux (Bash), and Windows (Git Bash / WSL).
-- **Safe lifecycle.** `install` is idempotent, `verify` is read-only, and
-  `uninstall` removes only GForge-owned files and restores your prior Git config.
-- **Zero runtime dependencies.**
+- **Install once, protected everywhere.** Configures Git's global `core.hooksPath`,
+  so the firewall applies to every repository on the machine.
+- **Deep, layered detection**
+  - **`.env` cross-reference** — blocks any staged file that hardcodes a real value
+    from your git-ignored `.env` files (the classic "pasted a token out of `.env`").
+  - **Provider rules** — 25+ credential shapes: AWS, GitHub/GitLab, Google, Slack,
+    Stripe, Twilio, SendGrid, npm, PyPI, OpenAI/Anthropic, PEM private keys, JWTs,
+    database URLs, and more.
+  - **Generic secrets** — any credential keyword assigned to a hardcoded value
+    (`DB_PASSWORD=…`, `password: "…"`, `api_key = "…"`).
+  - **Entropy** — high-entropy strings that carry no recognizable name.
+- **Low noise by design.** References like `process.env.DB_PASSWORD`, placeholders,
+  and env templates (`.env.example`) are not flagged, so correct code keeps flowing.
+- **Never leaks the secret.** Reports only file paths, line numbers, and rule names —
+  the matched value is never printed.
+- **Encoding-aware.** Handles UTF‑8, UTF‑16, and BOM-prefixed files (e.g. those
+  written by PowerShell) so nothing slips through as "binary".
+- **Zero-config upkeep.** Self-installing on `npm i -g`, self-upgrading, and
+  auto-updating — every workstation stays current on its own.
+- **gitleaks turbo (optional).** If [gitleaks](https://github.com/gitleaks/gitleaks)
+  is on `PATH`, GForge runs it too and merges the findings.
+- **Cross-platform, zero runtime dependencies.**
 
 ## Requirements
 
-- Node.js 20 or newer
-- Git
+- **Node.js** 20 or newer
+- **Git**
 
 ## Installation
-
-That's it — one command:
 
 ```bash
 npm install -g gforge
 ```
 
-Installing globally **automatically sets up the hooks** for every repository on
-the machine (via a postinstall step) — no separate `gforge install` needed. From
-that moment, every `git commit` is scanned for secrets. (If a custom global
-`core.hooksPath` is already set, GForge leaves it alone and asks you to run
-`gforge install` to take it over. Auto-setup is skipped in CI and can be disabled
-with `GFORGE_SKIP_POSTINSTALL=1`.)
-
-<details>
-<summary>Other install methods</summary>
-
-Install from the Git repository:
+That's the whole setup — installing globally configures the hooks for every
+repository automatically. From the next commit onward, changes are scanned for
+secrets. Confirm anytime with:
 
 ```bash
-npm install -g git+https://github.com/psspl-gaurang-joshi/gforge.git
+gforge verify
 ```
 
-Install from a local clone:
+## Quick start
 
 ```bash
-npm install -g .
+# See the current status of your workstation
+gforge verify
+
+# Try it — a hardcoded secret is blocked before it can be committed
+echo 'DB_PASSWORD=S3cr3t-Value-123' > config.txt
+git add config.txt
+git commit -m "add config"
+# → GForge blocks the commit and names config.txt (the value is never printed)
 ```
 
-Link the local CLI during development:
-
-```bash
-npm link
-```
-
-</details>
-
-## Upgrading
-
-`gforge update` is a self-upgrader — it checks npm for a newer version, installs
-it for you, and refreshes the hook. No need to remember `npm install -g gforge`:
-
-```bash
-gforge update            # upgrade to the latest published version + refresh hooks
-gforge update --force    # reinstall the latest even if you're already on it
-```
-
-`gforge install` does the same upgrade check before setting up hooks. (`npm
-install -g gforge` still works too, and its postinstall auto-refreshes the hook.)
-
-### Auto-update
-
-GForge keeps itself current automatically. When a newer version exists, it
-background-installs it **and** prints a one-line notice on commit (and on
-`gforge verify`):
-
-```
-gforge: v1.2.3 is available (you have v1.2.2). Run: gforge update
-```
-
-The version check runs at most once a day in a **detached background process** —
-it never delays or blocks a commit, and works offline (it just skips). The
-background install happens out of band, so your commit is never held up.
-
-Controls:
-
-```bash
-export GFORGE_AUTO_UPDATE=0    # notify only; don't auto-install (default: auto-install on)
-export GFORGE_NO_SELF_UPDATE=1 # don't self-upgrade in `install`/`update` (CI / air-gapped)
-```
-
-## Usage
+## Commands
 
 ```bash
 gforge <command> [--force]
@@ -123,73 +89,42 @@ gforge <command> [--force]
 
 | Command | Description |
 | --- | --- |
-| `gforge install` | Upgrade to the latest version (if any) and install global hooks. |
-| `gforge verify` | Read-only check of environment and installed hooks. |
-| `gforge update` | Upgrade to the latest version (if any) and refresh hooks. `--force` reinstalls the latest even if current. |
-| `gforge uninstall` | Remove GForge-owned hooks and restore prior Git config. |
-| `gforge version` | Print the version. |
-| `gforge help` | Print help. |
+| `gforge install` | Upgrade to the latest version (if any) and install the global hooks. |
+| `gforge verify` | Read-only health check of the environment and installed hooks. |
+| `gforge update` | Upgrade to the latest version (if any) and refresh the hooks. |
+| `gforge uninstall` | Remove GForge-owned hooks and restore your previous Git config. |
+| `gforge version` | Print the installed version. |
+| `gforge help` | Print usage. |
 
-### Example
-
-```bash
-# Check the workstation before installing
-gforge verify
-
-# Install the managed global hooks
-gforge install
-
-# From now on, commits containing a secret are blocked:
-echo 'DB_PASS=gForgeDBa@34$5@!' > config.txt
-git add config.txt
-git commit -m "add config"
-# -> GForge blocks the commit and lists config.txt (never printing the value)
-
-# Remove everything GForge installed
-gforge uninstall
-```
+`--force` (with `install`/`update`) reinstalls the latest release even if you are
+already on it. GForge never downgrades below your installed version.
 
 ## How detection works
 
-The `pre-commit` hook scans only the files staged for the current commit (not the
-whole repository) and blocks the commit if any appear to contain a secret. It
-reports file paths, line numbers, and rule names — **never** the matched value.
+The `pre-commit` hook scans only the files staged for the current commit — not the
+whole repository — and blocks the commit if any appear to contain a secret. It
+reports file paths, line numbers, and rule names, and **never prints the matched
+value**. Detection runs several layers in order:
 
-Detection runs five layers:
+1. **`.env` cross-reference** — the highest-precision signal: values read (in
+   memory only) from your git-ignored `.env` files, matched verbatim in staged code.
+2. **Provider rules** — fixed credential shapes for the major cloud and SaaS providers.
+3. **Generic secrets** — credential keywords assigned to a hardcoded value; smart
+   enough to ignore `process.env.*`, function calls, `${VAR}` interpolation, and
+   obvious placeholders.
+4. **Entropy** — unnamed high-entropy strings, tuned to skip Git SHAs, UUIDs, and lockfiles.
+5. **Secret files** — `.env` (and `.env.*` except templates), `id_rsa`, `*.p12`/`*.pfx`,
+   keystores, `.git-credentials`, `.netrc`, and more.
 
-0. **`.env` cross-reference (highest precision)** — GForge reads the actual secret
-   values from your repo's (git-ignored) `.env` files and blocks any staged file
-   that hardcodes one of them verbatim. This catches the classic "copied the token
-   out of `.env` and pasted it into the code" leak with essentially no false
-   positives. Values are read only in memory and never printed.
-1. **Provider rules** — fixed credential shapes for AWS, GitHub, GitLab, Google,
-   Slack, Stripe, Twilio (including bare auth tokens in a Twilio context), SendGrid,
-   Mailgun, npm, PyPI, OpenAI, Anthropic, DigitalOcean, Shopify, Telegram, JWTs,
-   PEM private keys, and URLs with embedded credentials.
-2. **Generic secrets** — any credential keyword (`password`, `pass`, `pwd`,
-   `secret`, `token`, `api_key`, `access_key`, `client_secret`, `private_key`,
-   `connection_string`, `credentials`, …) assigned to a hardcoded value, e.g.
-   `DB_PASS=…` or `password: "MyS3cretDbPass"`. Values that are **references**
-   (`password: process.env.DB_PASSWORD`, `config.get(...)`, `${VAR}` interpolation,
-   `$VAR`) or obvious placeholders are not flagged — so well-written config keeps
-   working.
-3. **Entropy** — high-entropy strings with no recognizable name. Tuned to skip git
-   SHAs, UUIDs, and lockfiles.
-4. **Secret files** — `.env` and `.env.*` (except templates like `.env.example`),
-   `id_rsa`, `*.p12`/`*.pfx`, keystores, `.git-credentials`, `.netrc`, and more.
-
-If the [gitleaks](https://github.com/gitleaks/gitleaks) binary is on your `PATH`,
-GForge also runs `gitleaks protect --staged` and merges its verdict.
-
-Detection is best-effort and not a substitute for keeping secrets out of Git.
+Detection is best-effort and complements — not replaces — good secret hygiene.
 
 ## Managing false positives
 
-Maximum coverage means occasional false positives. Three escape hatches:
+Maximum coverage occasionally flags something safe. Three escape hatches:
 
 - **Inline:** add a `gforge:allow` (or `gitleaks:allow`) comment on the line.
-- **Per-repo:** add a path or regex to a `.gforgeignore` file at the repo root
-  (a `.gitleaksignore` is also honored). Example:
+- **Per-repo:** add a path or pattern to a `.gforgeignore` file at the repo root
+  (a `.gitleaksignore` is also honored):
 
   ```gitignore
   # .gforgeignore
@@ -199,24 +134,60 @@ Maximum coverage means occasional false positives. Three escape hatches:
 
 - **One-off:** bypass a single commit with `git commit --no-verify`.
 
-## Configuration and file layout
+## Staying up to date
 
-GForge stores its files under the user's home directory and touches only global
-Git config:
+`gforge update` upgrades the package to the latest published release and refreshes
+the hook — no manual `npm install` needed. GForge also keeps itself current on its
+own: at most once a day it checks for a new version in a detached background
+process (it never delays or blocks a commit), installs it, and prints a one-line
+notice on commit:
 
-- `~/.gforge/hooks/pre-commit` — the managed hook (a small shim).
-- `~/.gforge/hooks/gforge-scan.mjs` — the self-contained scanner engine.
-- `~/.gforge/state.json` — records the prior `core.hooksPath` and the Node path so
-  `uninstall` can restore your configuration.
+```
+gforge: v1.2.0 is available (you have v1.1.0). Run: gforge update
+```
 
-Git lets a repository-local or system `core.hooksPath` override the global one, so
-in a repository that sets its own hooks path (for example Husky or lefthook) the
-managed hook does not run. `gforge verify` warns when it detects such an override
-in the current repository.
+## Configuration
+
+Behavior is controlled entirely through environment variables — there is no config
+file to manage.
+
+| Variable | Effect |
+| --- | --- |
+| `GFORGE_AUTO_UPDATE=0` | Notify only; do not auto-install new versions (default: auto-install on). |
+| `GFORGE_NO_SELF_UPDATE=1` | Skip the npm self-upgrade in `install`/`update` (CI / air-gapped). |
+| `GFORGE_SKIP_POSTINSTALL=1` | Skip automatic hook setup during `npm install`. |
+| `GFORGE_NODE=/path/to/node` | Pin the Node.js runtime the hook uses. |
+
+If a repository or the system already defines its own `core.hooksPath` (e.g. Husky
+or lefthook), GForge does not override it; run `gforge install` to have GForge take
+over. Automatic setup is skipped in CI (`CI` environment variable).
+
+## Cross-platform support
+
+| Platform | Shells |
+| --- | --- |
+| macOS | Bash, Zsh |
+| Linux | Bash |
+| Windows | Git Bash, WSL, PowerShell (via Git for Windows) |
+
+The scanner runs on Node.js; the hook is a small POSIX shell shim that locates Node
+robustly (including on Git for Windows) and fails closed if it cannot — a commit is
+never allowed through unscanned.
+
+## What GForge changes on your machine
+
+GForge is transparent and fully reversible. It touches only your **global** Git
+config and a single directory in your home folder:
+
+- `~/.gforge/hooks/` — the managed hook and scanner (`core.hooksPath` points here).
+- `~/.gforge/state.json` — records your previous `core.hooksPath` so `uninstall`
+  can restore it.
+
+`gforge uninstall` removes GForge-owned files and restores your prior configuration.
 
 ## Programmatic use
 
-GForge is primarily a CLI. The command runner is also exposed for scripting:
+GForge is primarily a CLI, but the command runner is exposed for scripting:
 
 ```js
 import { runCli } from "gforge";
@@ -225,27 +196,34 @@ const result = await runCli(["verify"], { stdout: process.stdout, stderr: proces
 process.exit(result.exitCode);
 ```
 
-## Development
+## Roadmap
 
-```bash
-npm test              # run the test suite
-npm run package:check # inspect the publishable tarball contents
-```
+The secret firewall is the first governance capability. Planned directions for the
+platform include:
+
+- Additional commit-time quality gates (commit message and branch conventions,
+  large-file and merge-conflict guards).
+- Shareable, versioned org policy packs.
+- Reporting and audit for governance coverage across a team.
 
 ## Contributing
 
-Issues and pull requests are welcome at
-[the GitHub repository](https://github.com/psspl-gaurang-joshi/gforge). Please keep
-changes focused, run `npm test` before submitting, and preserve the Apache 2.0
+Issues and pull requests are welcome at the
+[GitHub repository](https://github.com/psspl-gaurang-joshi/gforge). Please run
+`npm test` before submitting, keep changes focused, and preserve the Apache-2.0
 license header and `NOTICE`.
+
+```bash
+npm test               # run the test suite
+npm run package:check  # inspect the publishable package contents
+```
 
 ## Security
 
 To report a vulnerability, follow the process in [SECURITY.md](SECURITY.md). Do not
-open a public issue for security reports, and never include real secrets in a
-report.
+open a public issue for security reports, and never include real secrets in a report.
 
 ## License
 
-Licensed under the Apache License, Version 2.0. Preserve the notice in `NOTICE`
+Licensed under the [Apache License 2.0](LICENSE). Please preserve the `NOTICE` file
 when redistributing.
