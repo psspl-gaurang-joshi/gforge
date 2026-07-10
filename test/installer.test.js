@@ -5,7 +5,14 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { installManagedHooks, uninstallManagedHooks, updateManagedHooks, verifyManagedHooks } from "../src/installer.js";
-import { PRE_COMMIT_HOOK, resolveHooksDirectory, resolveStatePath } from "../src/hooks.js";
+import {
+  SCANNER_FILE_NAME,
+  getScannerContent,
+  resolveHooksDirectory,
+  resolvePreCommitPath,
+  resolveScannerPath,
+  resolveStatePath
+} from "../src/hooks.js";
 
 test("installs managed hooks and configures global hooks path", async () => {
   const homePath = await createTempHome();
@@ -15,12 +22,32 @@ test("installs managed hooks and configures global hooks path", async () => {
     execFile: git.execFile
   });
   const hooksDirectory = resolveHooksDirectory(homePath);
-  const hookPath = join(hooksDirectory, "pre-commit");
+  const scannerPath = resolveScannerPath(homePath);
+  const preCommitPath = resolvePreCommitPath(homePath);
 
   assert.equal(result.ok, true);
   assert.equal(git.hooksPath(), hooksDirectory);
-  assert.equal(await readFile(hookPath, "utf8"), PRE_COMMIT_HOOK);
-  assert.equal(Boolean((await stat(hookPath)).mode & 0o111), true);
+  // The scanner engine is copied verbatim from the package source.
+  assert.equal(await readFile(scannerPath, "utf8"), getScannerContent());
+  // pre-commit is an executable shim that delegates to the scanner.
+  const preCommit = await readFile(preCommitPath, "utf8");
+  assert.match(preCommit, new RegExp(SCANNER_FILE_NAME));
+  assert.equal(Boolean((await stat(preCommitPath)).mode & 0o111), true);
+});
+
+test("bakes the install-time node path into the hook shim as a fallback", async () => {
+  const homePath = await createTempHome();
+  const git = createGitConfigMock();
+
+  await installManagedHooks({
+    environment: createEnvironment(homePath),
+    execFile: git.execFile,
+    nodePath: "/opt/custom/bin/node"
+  });
+
+  const preCommit = await readFile(resolvePreCommitPath(homePath), "utf8");
+  assert.match(preCommit, /\/opt\/custom\/bin\/node/);
+  assert.match(preCommit, /exec "\$NODE" "\$SCANNER"/);
 });
 
 test("preserves previous global hooks path in state", async () => {
@@ -58,17 +85,52 @@ test("verifies installed managed hooks", async () => {
   assert.equal(report.checks.every((check) => check.status === "PASS"), true);
 });
 
-test("updates managed hooks idempotently", async () => {
+test("records the gforge version in state so upgrades are detectable", async () => {
   const homePath = await createTempHome();
   const git = createGitConfigMock();
-  const hooksDirectory = resolveHooksDirectory(homePath);
-  const hookPath = join(hooksDirectory, "pre-commit");
 
   await installManagedHooks({
     environment: createEnvironment(homePath),
     execFile: git.execFile
   });
-  await writeFile(hookPath, "#!/usr/bin/env sh\nexit 0\n");
+
+  const state = JSON.parse(await readFile(resolveStatePath(homePath), "utf8"));
+  const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+  assert.equal(state.gforgeVersion, pkg.version);
+});
+
+test("verify flags a stale on-disk engine and points at the fix", async () => {
+  const homePath = await createTempHome();
+  const git = createGitConfigMock();
+
+  await installManagedHooks({
+    environment: createEnvironment(homePath),
+    execFile: git.execFile
+  });
+  // Simulate an upgraded package whose on-disk hook was not refreshed.
+  await writeFile(resolveScannerPath(homePath), "// stale engine\n");
+
+  const report = await verifyManagedHooks({
+    environment: createEnvironment(homePath),
+    execFile: git.execFile
+  });
+
+  const scannerCheck = report.checks.find((check) => check.label.startsWith(SCANNER_FILE_NAME));
+  assert.equal(scannerCheck.status, "FAIL");
+  assert.match(scannerCheck.detail, /stale|gforge update/);
+});
+
+test("updates managed hooks idempotently", async () => {
+  const homePath = await createTempHome();
+  const git = createGitConfigMock();
+  const hooksDirectory = resolveHooksDirectory(homePath);
+  const scannerPath = resolveScannerPath(homePath);
+
+  await installManagedHooks({
+    environment: createEnvironment(homePath),
+    execFile: git.execFile
+  });
+  await writeFile(scannerPath, "// tampered scanner\n");
 
   const result = await updateManagedHooks({
     environment: createEnvironment(homePath),
@@ -76,7 +138,7 @@ test("updates managed hooks idempotently", async () => {
   });
 
   assert.equal(result.ok, true);
-  assert.equal(await readFile(hookPath, "utf8"), PRE_COMMIT_HOOK);
+  assert.equal(await readFile(scannerPath, "utf8"), getScannerContent());
   assert.equal(git.hooksPath(), hooksDirectory);
 });
 
@@ -189,16 +251,23 @@ test("verify reports missing managed hooks", async () => {
   assert.equal(report.checks.some((check) => check.status === "FAIL"), true);
 });
 
-test("pre-commit hook scans only the staged delta and never prints matched values", () => {
-  // Scoped to what is being committed, not the whole index snapshot.
-  assert.match(PRE_COMMIT_HOOK, /diff --cached --name-only --diff-filter=d/);
-  // Quiet match: grep reports match/no-match only, never the matched text.
-  assert.match(PRE_COMMIT_HOOK, /grep -E -i -a -q/);
-  // No grep option that would echo matched content (-o / -n).
-  assert.doesNotMatch(PRE_COMMIT_HOOK, / -o\b/);
-  assert.doesNotMatch(PRE_COMMIT_HOOK, /grep[^\n]* -n\b/);
-  // Fails closed: an unscannable file blocks the commit rather than slipping through.
-  assert.match(PRE_COMMIT_HOOK, /could not scan; blocked/);
+test("installs both managed files and delegates the pre-commit shim to the scanner", async () => {
+  const homePath = await createTempHome();
+  const git = createGitConfigMock();
+
+  await installManagedHooks({
+    environment: createEnvironment(homePath),
+    execFile: git.execFile
+  });
+
+  const scannerPath = resolveScannerPath(homePath);
+  const preCommit = await readFile(resolvePreCommitPath(homePath), "utf8");
+
+  // The engine file exists and the shim runs it via node.
+  assert.equal((await readFile(scannerPath, "utf8")).length > 0, true);
+  assert.match(preCommit, /exec "\$NODE" "\$SCANNER"/);
+  // Fail-closed if no node runtime is found.
+  assert.match(preCommit, /blocking commit for safety/);
 });
 
 test("reinstall does not fabricate a backup over a recorded 'was unset' state", async () => {
@@ -250,8 +319,8 @@ test("install leaves no temporary files behind", async () => {
     execFile: git.execFile
   });
 
-  const hooksDirectory = resolveHooksDirectory(homePath);
-  await assert.rejects(stat(join(hooksDirectory, "pre-commit.gforge-tmp")), { code: "ENOENT" });
+  await assert.rejects(stat(`${resolvePreCommitPath(homePath)}.gforge-tmp`), { code: "ENOENT" });
+  await assert.rejects(stat(`${resolveScannerPath(homePath)}.gforge-tmp`), { code: "ENOENT" });
   await assert.rejects(stat(`${resolveStatePath(homePath)}.gforge-tmp`), { code: "ENOENT" });
 });
 

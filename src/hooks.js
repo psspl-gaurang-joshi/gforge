@@ -1,58 +1,87 @@
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
+
+import { VERSION } from "./metadata.js";
 
 export const MANAGED_DIRECTORY_NAME = ".gforge";
 export const HOOKS_DIRECTORY_NAME = "hooks";
 export const STATE_FILE_NAME = "state.json";
 
-export const PRE_COMMIT_HOOK = `#!/usr/bin/env sh
-# GForge managed pre-commit hook.
-# Blocks commits whose staged changes appear to contain secrets.
-# Only file paths are ever printed, never the matched secret values.
-set -u
+export const SCANNER_FILE_NAME = "gforge-scan.mjs";
+export const PRE_COMMIT_FILE_NAME = "pre-commit";
 
-# High-confidence secret value shapes, plus name=value assignments for a few
-# credential types that have no reliable value shape. Matching is case
-# insensitive (see grep -i below) so lowercased variable names are still caught.
-PATTERN='(-----BEGIN [A-Z ]*PRIVATE KEY-----|(AKIA|ASIA)[0-9A-Z]{16}|gh[opsur]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AIza[0-9A-Za-z_-]{35}|sk-[A-Za-z0-9]{20,}|[rsp]k_(live|test)_[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9-]{10,}|npm_[A-Za-z0-9]{36}|(AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|GITHUB_TOKEN|NPM_TOKEN)[[:space:]]*[:=][[:space:]]*"?[A-Za-z0-9/+_-]{16,})'
-
-# Inspect only the paths that are part of THIS commit (staged, excluding
-# deletions). Pre-existing content in unchanged files must not block unrelated
-# commits. Fail closed if the staged file list cannot be produced.
-staged=$(git -c core.quotePath=false diff --cached --name-only --diff-filter=d) || {
-  echo "GForge: unable to inspect staged changes; commit blocked for safety." >&2
-  exit 1
+// The managed hook delegates to the Node scanner. The scanner file is the single
+// source of truth (src/scanner.js) copied into the hooks directory (so it runs
+// even if the global package is later moved), with the current version baked in
+// for the "update available" notice.
+export function getScannerContent() {
+  const source = readFileSync(new URL("./scanner.js", import.meta.url), "utf8");
+  return source.replace(/__GFORGE_VERSION__/g, VERSION);
 }
 
-[ -n "$staged" ] || exit 0
+// POSIX sh shim. It resolves a Node runtime robustly — GForge is installed via
+// npm so Node exists, but git may run the hook from a GUI client whose PATH
+// lacks nvm's node; the install-time interpreter path is baked in as a fallback.
+// Fails closed (blocks the commit) if no Node runtime can be found.
+export function buildPreCommitHook(nodePath) {
+  const raw = String(nodePath ?? "");
+  const fwd = escapeShellDoubleQuotedValue(raw.replace(/\\/g, "/")); // forward slashes: friendlier in Git Bash
+  const escapedRaw = escapeShellDoubleQuotedValue(raw);
+  return `#!/usr/bin/env sh
+# GForge managed pre-commit hook. Delegates secret scanning to the Node engine.
+set -u
 
-# Scan the staged blob of each changed file. Emit only the path on a match, or a
-# clear error marker if a file could not be scanned (fail closed, not open).
-# grep -a scans binary/attribute-marked files too, so they cannot hide secrets.
-findings=$(
-  printf '%s\\n' "$staged" | while IFS= read -r file; do
-    [ -n "$file" ] || continue
-    git show ":$file" 2>/dev/null | grep -E -i -a -q "$PATTERN"
-    rc=$?
-    if [ "$rc" -eq 0 ]; then
-      printf '%s\\n' "$file"
-    elif [ "$rc" -gt 1 ]; then
-      printf '%s\\t(could not scan; blocked)\\n' "$file"
-    fi
+HOOK_DIR=$(cd "$(dirname "$0")" && pwd)
+SCANNER="$HOOK_DIR/${SCANNER_FILE_NAME}"
+
+# On Git for Windows the hook runs under MSYS sh; translate the scanner path to a
+# native Windows path so a native node.exe can resolve the module. No-op elsewhere.
+if command -v cygpath >/dev/null 2>&1; then
+  SCANNER=$(cygpath -w "$SCANNER" 2>/dev/null || printf '%s' "$SCANNER")
+fi
+
+# Resolve a Node runtime. GForge is installed via npm so Node exists, but git may
+# run the hook from an environment (GUI client, minimal PATH) that lacks it. Try
+# PATH first, then the interpreter path recorded at install time.
+NODE="\${GFORGE_NODE:-}"
+if [ -z "$NODE" ]; then
+  for candidate in node node.exe; do
+    if command -v "$candidate" >/dev/null 2>&1; then NODE="$candidate"; break; fi
   done
-)
+fi
+if [ -z "$NODE" ]; then
+  for candidate in "${fwd}" "${escapedRaw}"; do
+    if [ -n "$candidate" ] && [ -x "$candidate" ]; then NODE="$candidate"; break; fi
+  done
+fi
 
-if [ -n "$findings" ]; then
-  echo "GForge blocked this commit because staged changes may contain secrets." >&2
-  echo "Review these files and remove sensitive values before committing:" >&2
-  printf '%s\\n' "$findings" >&2
-  echo "If this is a false positive, bypass once with: git commit --no-verify" >&2
+if [ -z "$NODE" ]; then
+  echo "GForge: no Node.js runtime found to scan for secrets; blocking commit for safety." >&2
+  echo "Set GFORGE_NODE to your node path, or run: gforge install" >&2
   exit 1
 fi
 
-exit 0
+exec "$NODE" "$SCANNER" pre-commit
 `;
+}
 
-export const MANAGED_HOOKS = new Map([["pre-commit", PRE_COMMIT_HOOK]]);
+function escapeShellDoubleQuotedValue(value) {
+  return value
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"')
+    .replace(/\$/g, "\\$")
+    .replace(/`/g, "\\`");
+}
+
+// The set of files GForge writes into the hooks directory.
+export function getManagedFiles(nodePath) {
+  return [
+    { name: SCANNER_FILE_NAME, content: getScannerContent(), mode: 0o644, executable: false },
+    { name: PRE_COMMIT_FILE_NAME, content: buildPreCommitHook(nodePath), mode: 0o755, executable: true }
+  ];
+}
+
+export const MANAGED_FILE_NAMES = [SCANNER_FILE_NAME, PRE_COMMIT_FILE_NAME];
 
 export function resolveManagedDirectory(homePath) {
   return join(homePath, MANAGED_DIRECTORY_NAME);
@@ -64,4 +93,12 @@ export function resolveHooksDirectory(homePath) {
 
 export function resolveStatePath(homePath) {
   return join(resolveManagedDirectory(homePath), STATE_FILE_NAME);
+}
+
+export function resolveScannerPath(homePath) {
+  return join(resolveHooksDirectory(homePath), SCANNER_FILE_NAME);
+}
+
+export function resolvePreCommitPath(homePath) {
+  return join(resolveHooksDirectory(homePath), PRE_COMMIT_FILE_NAME);
 }
