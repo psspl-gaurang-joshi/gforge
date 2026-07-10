@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { VERSION } from "./metadata.js";
+
 export const MANAGED_DIRECTORY_NAME = ".gforge";
 export const HOOKS_DIRECTORY_NAME = "hooks";
 export const STATE_FILE_NAME = "state.json";
@@ -8,11 +10,13 @@ export const STATE_FILE_NAME = "state.json";
 export const SCANNER_FILE_NAME = "gforge-scan.mjs";
 export const PRE_COMMIT_FILE_NAME = "pre-commit";
 
-// The managed hook delegates to the Node scanner. The scanner file is the
-// single source of truth (src/scanner.js) copied verbatim into the hooks
-// directory so it runs even if the global package is later moved or removed.
+// The managed hook delegates to the Node scanner. The scanner file is the single
+// source of truth (src/scanner.js) copied into the hooks directory (so it runs
+// even if the global package is later moved), with the current version baked in
+// for the "update available" notice.
 export function getScannerContent() {
-  return readFileSync(new URL("./scanner.js", import.meta.url), "utf8");
+  const source = readFileSync(new URL("./scanner.js", import.meta.url), "utf8");
+  return source.replace(/__GFORGE_VERSION__/g, VERSION);
 }
 
 // POSIX sh shim. It resolves a Node runtime robustly — GForge is installed via

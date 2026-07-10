@@ -82,32 +82,48 @@ gforge install
 
 ## Upgrading
 
+`gforge update` is a self-upgrader — it checks npm for a newer version, installs
+it for you, and refreshes the hook. No need to remember `npm install -g gforge`:
+
 ```bash
-npm install -g gforge
+gforge update            # upgrade to the latest published version + refresh hooks
+gforge update --force    # reinstall the latest even if you're already on it
 ```
 
-If GForge is already active, upgrading **automatically refreshes** the installed
-hook to the new version (via a postinstall step) — no extra command needed.
-`gforge verify` will confirm `gforge-scan.mjs-content: managed content matches`.
+`gforge install` does the same upgrade check before setting up hooks. (`npm
+install -g gforge` still works too, and its postinstall auto-refreshes the hook.)
 
-Two caveats:
+### Auto-update
 
-- If you install with `npm install --ignore-scripts` (or your environment blocks
-  install scripts), run `gforge update` yourself after upgrading.
-- `gforge verify` reports `installed engine is stale — run gforge update` whenever
-  the on-disk hook lags the installed CLI, so a missed refresh is easy to spot.
+By default, when a newer version exists GForge prints a one-line notice on commit
+(and on `gforge verify`):
+
+```
+gforge: v1.2.3 is available (you have v1.2.2). Run: gforge update
+```
+
+The version check runs at most once a day in a **detached background process** —
+it never delays or blocks a commit, and works offline (it just skips). To make
+upgrades fully automatic, opt in:
+
+```bash
+export GFORGE_AUTO_UPDATE=1   # background-installs new versions when found
+```
+
+Set `GFORGE_NO_SELF_UPDATE=1` to disable the npm self-upgrade in `install`/`update`
+(e.g. in CI or air-gapped environments).
 
 ## Usage
 
 ```bash
-gforge <command>
+gforge <command> [--force]
 ```
 
 | Command | Description |
 | --- | --- |
-| `gforge install` | Install managed global hooks and set global `core.hooksPath`. |
+| `gforge install` | Upgrade to the latest version (if any) and install global hooks. |
 | `gforge verify` | Read-only check of environment and installed hooks. |
-| `gforge update` | Re-apply the latest managed hooks (idempotent). |
+| `gforge update` | Upgrade to the latest version (if any) and refresh hooks. `--force` reinstalls the latest even if current. |
 | `gforge uninstall` | Remove GForge-owned hooks and restore prior Git config. |
 | `gforge version` | Print the version. |
 | `gforge help` | Print help. |

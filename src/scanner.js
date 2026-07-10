@@ -8,10 +8,15 @@
 // It never prints matched secret values — only file paths, line numbers, and
 // rule identifiers.
 
-import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { basename } from "node:path";
-import { pathToFileURL } from "node:url";
+import { execFileSync, spawn } from "node:child_process";
+import { readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { basename, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+// Baked at install time (see getScannerContent in hooks.js). Left as a literal
+// placeholder in source; only used for the update-available notice.
+const RUNNING_VERSION = "__GFORGE_VERSION__";
 
 // ---------------------------------------------------------------------------
 // Provider / value-shape rules (high confidence). Ported and adapted from the
@@ -539,16 +544,115 @@ export function runPreCommit(write = (s) => process.stderr.write(s)) {
   return 0;
 }
 
+// ---------------------------------------------------------------------------
+// Update notification (never blocks or delays the commit).
+//
+// The commit path only READS a cache written by a detached background check, so
+// no network happens on the critical path. Once/day the hook fire-and-forgets a
+// background refresh of that cache; with GFORGE_AUTO_UPDATE=1 the background
+// process also upgrades the package.
+// ---------------------------------------------------------------------------
+const UPDATE_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const REGISTRY_URL = "https://registry.npmjs.org/gforge/latest";
+
+function updateCachePath() {
+  return join(homedir(), ".gforge", "update-check.json");
+}
+
+function versionIsNewer(latest, current) {
+  const pa = String(latest).split(".").map((n) => parseInt(n, 10) || 0);
+  const pb = String(current).split(".").map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < 3; i += 1) {
+    if ((pa[i] || 0) > (pb[i] || 0)) return true;
+    if ((pa[i] || 0) < (pb[i] || 0)) return false;
+  }
+  return false;
+}
+
+// Reads the cached latest version, prints a one-line notice if newer, and once a
+// day fire-and-forgets a background refresh. Fully best-effort — any failure is
+// swallowed so it can never affect the commit.
+function maybeUpdateNotice(write) {
+  try {
+    let cache = null;
+    try {
+      cache = JSON.parse(readFileSync(updateCachePath(), "utf8"));
+    } catch {
+      cache = null;
+    }
+
+    if (cache && cache.latest && RUNNING_VERSION[0] !== "_" && versionIsNewer(cache.latest, RUNNING_VERSION)) {
+      write(`\ngforge: v${cache.latest} is available (you have v${RUNNING_VERSION}). Run: gforge update\n`);
+    }
+
+    const stale = !cache || (Date.now() - (cache.checkedAt || 0)) > UPDATE_CACHE_TTL_MS;
+    if (stale) {
+      const self = fileURLToPath(import.meta.url);
+      const child = spawn(process.execPath, [self, "__update-check"], {
+        detached: true,
+        stdio: "ignore"
+      });
+      child.unref();
+    }
+  } catch {
+    // Never let update logic affect a commit.
+  }
+}
+
+// Background worker: refresh the cache and (opt-in) auto-upgrade. Detached from
+// the commit, so it may take its time.
+async function runUpdateCheck() {
+  const cachePath = updateCachePath();
+  let latest = null;
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 6000);
+    try {
+      const response = await fetch(REGISTRY_URL, { signal: controller.signal });
+      if (response.ok) {
+        const body = await response.json();
+        if (body && /^\d+\.\d+\.\d+/.test(String(body.version || ""))) latest = body.version;
+      }
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch {
+    latest = null;
+  }
+
+  try {
+    // Always stamp checkedAt so a failed check still waits a day before retrying.
+    writeFileSync(cachePath, `${JSON.stringify({ checkedAt: Date.now(), latest: latest ?? null })}\n`);
+  } catch {
+    // ignore
+  }
+
+  if (latest && RUNNING_VERSION[0] !== "_" && versionIsNewer(latest, RUNNING_VERSION) && process.env.GFORGE_AUTO_UPDATE) {
+    try {
+      const npm = spawn("npm", ["install", "-g", `gforge@${latest}`], { stdio: "ignore" });
+      await new Promise((resolve) => npm.on("close", resolve).on("error", resolve));
+    } catch {
+      // ignore; the notice will still prompt a manual `gforge update`.
+    }
+  }
+}
+
 // Run as a hook when executed directly (e.g. ~/.gforge/hooks/gforge-scan.mjs).
 const invokedDirectly =
   process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 
 if (invokedDirectly) {
-  try {
-    process.exit(runPreCommit());
-  } catch (error) {
-    // Fail closed: if the scanner cannot run, block rather than risk a leak.
-    process.stderr.write(`GForge: secret scan could not complete, blocking commit for safety.\n${error?.message ?? error}\n`);
-    process.exit(1);
+  if (process.argv[2] === "__update-check") {
+    runUpdateCheck().finally(() => process.exit(0));
+  } else {
+    try {
+      const code = runPreCommit();
+      maybeUpdateNotice((s) => process.stderr.write(s));
+      process.exit(code);
+    } catch (error) {
+      // Fail closed: if the scanner cannot run, block rather than risk a leak.
+      process.stderr.write(`GForge: secret scan could not complete, blocking commit for safety.\n${error?.message ?? error}\n`);
+      process.exit(1);
+    }
   }
 }
