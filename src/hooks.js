@@ -25,8 +25,8 @@ export function getScannerContent() {
 // Fails closed (blocks the commit) if no Node runtime can be found.
 export function buildPreCommitHook(nodePath) {
   const raw = String(nodePath ?? "");
-  const fwd = raw.replace(/\\/g, "/").replace(/"/g, '\\"'); // forward slashes: friendlier in Git Bash
-  const escapedRaw = raw.replace(/"/g, '\\"');
+  const fwd = escapeShellDoubleQuotedValue(raw.replace(/\\/g, "/")); // forward slashes: friendlier in Git Bash
+  const escapedRaw = escapeShellDoubleQuotedValue(raw);
   return `#!/usr/bin/env sh
 # GForge managed pre-commit hook. Delegates secret scanning to the Node engine.
 set -u
@@ -63,6 +63,14 @@ fi
 
 exec "$NODE" "$SCANNER" pre-commit
 `;
+}
+
+function escapeShellDoubleQuotedValue(value) {
+  return value
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"')
+    .replace(/\$/g, "\\$")
+    .replace(/`/g, "\\`");
 }
 
 // The set of files GForge writes into the hooks directory.
