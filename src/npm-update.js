@@ -12,6 +12,13 @@ const execFileAsync = promisify(execFile);
 
 export const PACKAGE_NAME = "gforge";
 
+// On Windows the global npm is `npm.cmd`, which execFile/spawn cannot launch
+// without a shell — so npm calls must run through the shell there. Elsewhere we
+// avoid the shell. Version strings are validated before interpolation so there
+// is no shell-injection surface.
+const NPM_VIA_SHELL = process.platform === "win32";
+const SEMVER = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
+
 // Numeric compare of X.Y.Z (prerelease/build metadata ignored).
 export function compareVersions(a, b) {
   const pa = String(a).split(".").map((n) => parseInt(n, 10) || 0);
@@ -49,10 +56,11 @@ export async function getLatestVersion(options = {}) {
   const exec = options.execFile ?? execFileAsync;
   try {
     const { stdout } = await exec("npm", ["view", PACKAGE_NAME, "version"], {
-      timeout: options.timeoutMs ?? 8000
+      timeout: options.timeoutMs ?? 8000,
+      shell: NPM_VIA_SHELL
     });
     const value = String(stdout).trim();
-    return /^\d+\.\d+\.\d+/.test(value) ? value : null;
+    return SEMVER.test(value) ? value : null;
   } catch {
     return null;
   }
@@ -61,7 +69,10 @@ export async function getLatestVersion(options = {}) {
 async function getGlobalBinPath(options = {}) {
   const exec = options.execFile ?? execFileAsync;
   try {
-    const { stdout } = await exec("npm", ["root", "-g"], { timeout: options.timeoutMs ?? 8000 });
+    const { stdout } = await exec("npm", ["root", "-g"], {
+      timeout: options.timeoutMs ?? 8000,
+      shell: NPM_VIA_SHELL
+    });
     const root = String(stdout).trim();
     return root ? join(root, PACKAGE_NAME, "bin", "gforge.js") : null;
   } catch {
@@ -73,12 +84,17 @@ async function getGlobalBinPath(options = {}) {
 // binary to finish the requested command with the NEW code (guarded against
 // recursion via GFORGE_NO_SELF_UPDATE). Returns { ok, ... }; never throws.
 export async function performSelfUpgrade(command, version, options = {}) {
+  // `version` is only used to decide/report; the install target is the constant
+  // `${PACKAGE_NAME}@latest` (npm's `latest` dist-tag IS what getLatestVersion
+  // reads), so no registry-derived string is ever interpolated into the command.
+  if (!SEMVER.test(String(version))) {
+    return { ok: false, error: `refusing to upgrade to unexpected version "${version}"` };
+  }
   const run = options.spawnSync ?? spawnSync;
-  const spec = `${PACKAGE_NAME}@${version}`;
 
-  const install = run("npm", ["install", "-g", spec], { stdio: "inherit" });
+  const install = run("npm", ["install", "-g", `${PACKAGE_NAME}@latest`], { stdio: "inherit", shell: NPM_VIA_SHELL });
   if (!install || install.status !== 0) {
-    return { ok: false, error: `npm install -g ${spec} exited with status ${install ? install.status : "unknown"}` };
+    return { ok: false, error: `npm install -g ${PACKAGE_NAME}@latest exited with status ${install ? install.status : "unknown"}` };
   }
 
   const bin = options.binPath ?? (await getGlobalBinPath(options));

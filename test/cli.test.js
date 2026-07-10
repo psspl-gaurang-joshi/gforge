@@ -200,6 +200,41 @@ test("falls back to a local install when the upgrade fails", async () => {
   assert.match(streams.stdout.value, /GForge install complete/);
 });
 
+test("installs hooks locally when the upgrade cannot re-exec the new binary", async () => {
+  const streams = createStreams();
+  let localInstalled = false;
+  const result = await runCli(["install"], streams, {
+    getLatestVersion: async () => "999.0.0",
+    performSelfUpgrade: async () => ({ ok: true, reexeced: false }),
+    installManagedHooks: async () => {
+      localInstalled = true;
+      return { ok: true, exitCode: 0, messages: ["Installed"] };
+    }
+  });
+
+  assert.equal(result.exitCode, 0);
+  assert.equal(localInstalled, true); // must not report success without installing hooks
+  assert.match(streams.stdout.value, /GForge install complete/);
+});
+
+test("--force does not downgrade when local is ahead of the published latest", async () => {
+  const streams = createStreams();
+  let upgraded = false;
+  const result = await runCli(["update", "--force"], streams, {
+    getLatestVersion: async () => "0.0.1", // older than the installed version
+    performSelfUpgrade: async () => {
+      upgraded = true;
+      return { ok: true, reexeced: true };
+    },
+    updateManagedHooks: async () => ({ ok: true, command: "update", exitCode: 0, messages: ["Updated"] })
+  });
+
+  assert.equal(result.exitCode, 0);
+  assert.equal(upgraded, false); // never install an older version
+  assert.match(streams.stdout.value, /not downgrading/);
+  assert.match(streams.stdout.value, /GForge update complete/);
+});
+
 test("rejects unknown commands", async () => {
   const streams = createStreams();
   const result = await runCli(["wat"], streams);
