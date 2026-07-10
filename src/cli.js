@@ -63,27 +63,35 @@ async function runInstallOrUpdate(command, args, options, streams) {
 
   if (!selfUpdateDisabled) {
     const latest = await (options.getLatestVersion ?? getLatestVersion)(options);
+    // --force reinstalls the latest, but never installs a version older than the
+    // one already running (no accidental downgrade when local is ahead of npm).
+    const shouldUpgrade = latest && (isNewer(latest, VERSION) || (force && !isNewer(VERSION, latest)));
 
-    if (latest && (isNewer(latest, VERSION) || force)) {
-      const upgrading = isNewer(latest, VERSION);
+    if (shouldUpgrade) {
       streams.stdout.write(
-        upgrading
+        isNewer(latest, VERSION)
           ? `GForge: upgrading ${VERSION} → ${latest}...\n`
           : `GForge: reinstalling gforge@${latest} (forced)...\n`
       );
       try {
         const result = await (options.performSelfUpgrade ?? performSelfUpgrade)(command, latest, options);
-        if (result.ok) {
-          if (!result.reexeced) {
-            streams.stdout.write(`GForge ${command} complete\n\nNow running gforge@${latest}.\n`);
-          }
+        if (result.ok && result.reexeced) {
+          // The freshly installed binary already ran the command with new code.
           return { exitCode: 0 };
         }
-        streams.stderr.write(`GForge: upgrade failed (${result.error ?? "unknown"}); continuing with ${VERSION}.\n`);
+        if (result.ok) {
+          // Package upgraded, but the new binary could not be re-exec'd. Set up
+          // hooks now with the running code so they are actually installed.
+          streams.stdout.write(`GForge: upgraded to ${latest}; setting up hooks with the current version...\n`);
+        } else {
+          streams.stderr.write(`GForge: upgrade failed (${result.error ?? "unknown"}); continuing with ${VERSION}.\n`);
+        }
       } catch (error) {
         streams.stderr.write(`GForge: upgrade failed (${error?.message ?? error}); continuing with ${VERSION}.\n`);
       }
-      // Fall through: set up hooks with the currently installed version.
+      // Fall through: set up/refresh hooks with the currently installed version.
+    } else if (latest && force && isNewer(VERSION, latest)) {
+      streams.stdout.write(`GForge: installed version (${VERSION}) is ahead of the latest published (${latest}); not downgrading. Refreshing hooks.\n`);
     } else if (latest && !isNewer(latest, VERSION)) {
       streams.stdout.write(`GForge: already on the latest version (${VERSION}).\n`);
     }
@@ -137,7 +145,8 @@ Options:
   --force     With install/update, reinstall the latest version even if current
 
 Environment:
-  GFORGE_AUTO_UPDATE=1     Auto-install new versions in the background on commit
+  GFORGE_AUTO_UPDATE=0     Disable automatic background upgrades (on by default)
   GFORGE_NO_SELF_UPDATE=1  Skip the npm self-upgrade in install/update
+  GFORGE_SKIP_POSTINSTALL=1  Skip auto-setup during npm install
 `;
 }
