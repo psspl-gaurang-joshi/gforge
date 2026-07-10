@@ -310,9 +310,38 @@ function stagedFiles() {
   return out.toString("utf8").split("\0").filter(Boolean);
 }
 
+// Decode a git blob to text, honoring BOMs and BOM-less UTF-16 (common on
+// Windows, e.g. files written by PowerShell's `>`/Out-File). Without this a
+// UTF-16 secret reads as interleaved NUL bytes and no rule matches. Falls back
+// to latin1 so binary content is still scanned byte-for-byte.
+export function decodeBlob(buf) {
+  if (!buf || buf.length === 0) return "";
+  if (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe) return buf.toString("utf16le", 2);
+  if (buf.length >= 2 && buf[0] === 0xfe && buf[1] === 0xff) {
+    const swapped = Buffer.from(buf.subarray(2));
+    swapped.swap16();
+    return swapped.toString("utf16le");
+  }
+  if (buf.length >= 3 && buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf) {
+    return buf.toString("utf8", 3);
+  }
+  // BOM-less UTF-16LE heuristic: many NULs in the odd byte positions.
+  const sample = Math.min(buf.length, 1024);
+  if (sample >= 4) {
+    let zeros = 0;
+    let checked = 0;
+    for (let i = 1; i < sample; i += 2) {
+      checked += 1;
+      if (buf[i] === 0) zeros += 1;
+    }
+    if (checked > 0 && zeros / checked > 0.7) return buf.toString("utf16le");
+  }
+  return buf.toString("latin1");
+}
+
 function stagedContent(filePath) {
   try {
-    return git(["show", `:${filePath}`]).toString("latin1");
+    return decodeBlob(git(["show", `:${filePath}`]));
   } catch {
     return null; // submodule/gitlink or unreadable; nothing to scan.
   }
@@ -377,7 +406,7 @@ function loadDotenvSecrets() {
   for (const file of DOTENV_FILES) {
     let text;
     try {
-      text = readFileSync(`${root}/${file}`, "utf8");
+      text = decodeBlob(readFileSync(`${root}/${file}`));
     } catch {
       continue;
     }
