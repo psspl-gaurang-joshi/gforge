@@ -84,15 +84,17 @@ async function getGlobalBinPath(options = {}) {
 // binary to finish the requested command with the NEW code (guarded against
 // recursion via GFORGE_NO_SELF_UPDATE). Returns { ok, ... }; never throws.
 export async function performSelfUpgrade(command, version, options = {}) {
+  // `version` is only used to decide/report; the install target is the constant
+  // `${PACKAGE_NAME}@latest` (npm's `latest` dist-tag IS what getLatestVersion
+  // reads), so no registry-derived string is ever interpolated into the command.
   if (!SEMVER.test(String(version))) {
-    return { ok: false, error: `refusing to install unexpected version "${version}"` };
+    return { ok: false, error: `refusing to upgrade to unexpected version "${version}"` };
   }
   const run = options.spawnSync ?? spawnSync;
-  const spec = `${PACKAGE_NAME}@${version}`;
 
-  const install = run("npm", ["install", "-g", spec], { stdio: "inherit", shell: NPM_VIA_SHELL });
+  const install = run("npm", ["install", "-g", `${PACKAGE_NAME}@latest`], { stdio: "inherit", shell: NPM_VIA_SHELL });
   if (!install || install.status !== 0) {
-    return { ok: false, error: `npm install -g ${spec} exited with status ${install ? install.status : "unknown"}` };
+    return { ok: false, error: `npm install -g ${PACKAGE_NAME}@latest exited with status ${install ? install.status : "unknown"}` };
   }
 
   const bin = options.binPath ?? (await getGlobalBinPath(options));

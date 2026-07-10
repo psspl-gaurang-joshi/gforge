@@ -632,7 +632,9 @@ async function runUpdateCheck() {
   const safeVersion = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(String(latest || ""));
   if (latest && safeVersion && !optOut && RUNNING_VERSION[0] !== "_" && versionIsNewer(latest, RUNNING_VERSION)) {
     try {
-      const npm = spawn("npm", ["install", "-g", `gforge@${latest}`], {
+      // Install target is the constant gforge@latest (== the version we just
+      // detected); nothing registry-derived is interpolated into the command.
+      const npm = spawn("npm", ["install", "-g", "gforge@latest"], {
         stdio: "ignore",
         shell: process.platform === "win32"
       });
