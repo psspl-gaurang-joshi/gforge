@@ -146,8 +146,7 @@ function makePaint(stream) {
 function banner(stream) {
   const paint = makePaint(stream);
   const width = LOGO.split("\n")[0].length;
-  const cols = stream && Number.isInteger(stream.columns) && stream.columns > width ? stream.columns : width;
-  const version = `v${VERSION}`.padStart(cols); // bottom-right, to the terminal edge
+  const version = `v${VERSION}`.padStart(width); // bottom-right, aligned to the logo's right edge
   const rawPillars = "Secure • Standardize • Govern • Scale";
   const pillars = " ".repeat(Math.max(0, Math.floor((width - rawPillars.length) / 2))) + rawPillars; // centered under the logo
   const tagline = "  ⚒  Governance Forge - The secret firewall behind every commit.";
