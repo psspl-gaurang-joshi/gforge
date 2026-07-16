@@ -500,11 +500,32 @@ export function scanStaged(options = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// Reporting (never prints matched values).
+// Reporting (never prints matched values). Danger-styled when the output is an
+// interactive terminal; plain otherwise (pipes, CI, NO_COLOR).
 // ---------------------------------------------------------------------------
-export function formatReport({ findings, gitleaks }) {
+function makePalette(enabled) {
+  const wrap = (code) => (text) => (enabled ? `[${code}m${text}[0m` : text);
+  return {
+    danger: wrap("1;97;41"), // bold white on red — the banner
+    red: wrap("31"),
+    redBold: wrap("1;31"),
+    yellow: wrap("33"),
+    bold: wrap("1"),
+    dim: wrap("2")
+  };
+}
+
+export function colorEnabled(stream) {
+  if (process.env.NO_COLOR) return false;
+  if (process.env.FORCE_COLOR) return true;
+  return Boolean(stream && stream.isTTY);
+}
+
+export function formatReport({ findings, gitleaks }, options = {}) {
+  const c = makePalette(Boolean(options.color));
   const lines = [];
-  lines.push("GForge blocked this commit — potential secrets detected in staged changes.");
+  lines.push(c.danger("  ⚒  GForge - COMMIT BLOCKED  "));
+  lines.push(c.redBold("Potential secrets detected in staged changes:"));
   lines.push("");
 
   const byFile = new Map();
@@ -514,23 +535,23 @@ export function formatReport({ findings, gitleaks }) {
   }
 
   for (const [file, fileFindings] of byFile) {
-    lines.push(`  ${file}`);
+    lines.push(`  ${c.bold(file)}`);
     for (const f of fileFindings) {
       const where = f.line > 0 ? `line ${f.line}` : "file";
-      lines.push(`    - [${f.ruleId}] ${f.description} (${where})`);
+      lines.push(`    ${c.red("✗")} ${c.yellow(`[${f.ruleId}]`)} ${f.description} (${where})`);
     }
   }
 
   if (gitleaks?.leaks) {
-    lines.push("  (gitleaks also reported findings in the staged changes)");
+    lines.push(`  ${c.yellow("(gitleaks also reported findings in the staged changes)")}`);
   }
 
   lines.push("");
-  lines.push("No secret values are printed above. To proceed you can:");
-  lines.push("  - remove the secret from the staged change, or");
-  lines.push("  - mark a false positive with an inline `gforge:allow` comment, or");
-  lines.push("  - add a path/pattern to a .gforgeignore file, or");
-  lines.push("  - bypass this one commit with: git commit --no-verify");
+  lines.push(c.dim("No secret values are printed above. To proceed you can:"));
+  lines.push(c.dim("  - remove the secret from the staged change, or"));
+  lines.push(c.dim("  - mark a false positive with an inline `gforge:allow` comment, or"));
+  lines.push(c.dim("  - add a path/pattern to a .gforgeignore file, or"));
+  lines.push(c.dim("  - bypass this one commit with: git commit --no-verify"));
   return `${lines.join("\n")}\n`;
 }
 
@@ -538,7 +559,7 @@ export function runPreCommit(write = (s) => process.stderr.write(s)) {
   const result = scanStaged();
   const blocked = result.findings.length > 0 || result.gitleaks?.leaks;
   if (blocked) {
-    write(formatReport(result));
+    write(formatReport(result, { color: colorEnabled(process.stderr) }));
     return 1;
   }
   return 0;

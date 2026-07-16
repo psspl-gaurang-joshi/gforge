@@ -19,7 +19,7 @@ export async function runCli(args, streams, options = {}) {
   const command = args[0] ?? "help";
 
   if (command === "help" || command === "--help" || command === "-h") {
-    streams.stdout.write(helpText());
+    streams.stdout.write(banner(streams.stdout) + helpText(streams.stdout));
     return { exitCode: 0 };
   }
 
@@ -50,7 +50,7 @@ export async function runCli(args, streams, options = {}) {
     return { exitCode: report.exitCode };
   }
 
-  streams.stderr.write(`Unknown command: ${command}\n\n${helpText()}`);
+  streams.stderr.write(`${banner(streams.stderr)}Unknown command: ${command}\n\n${helpText(streams.stderr)}`);
   return { exitCode: 1 };
 }
 
@@ -125,28 +125,67 @@ async function runMutation(command, operation, options, streams) {
   }
 }
 
-function helpText() {
-  return `gforge ${VERSION}
+const LOGO = [
+  " ██████╗ ███████╗ ██████╗ ██████╗  ██████╗ ███████╗",
+  "██╔════╝ ██╔════╝██╔═══██╗██╔══██╗██╔════╝ ██╔════╝",
+  "██║  ███╗█████╗  ██║   ██║██████╔╝██║  ███╗█████╗  ",
+  "██║   ██║██╔══╝  ██║   ██║██╔══██╗██║   ██║██╔══╝  ",
+  "╚██████╔╝██║     ╚██████╔╝██║  ██║╚██████╔╝███████╗",
+  " ╚═════╝ ╚═╝      ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚══════╝"
+].join("\n");
 
-Secure global Git hooks installer for developer workstations.
+// Shared ANSI painter. Colors only when the target stream is an interactive
+// terminal (and NO_COLOR is not set), so pipes / CI stay clean.
+function makePaint(stream) {
+  const color = !process.env.NO_COLOR && Boolean(stream && stream.isTTY);
+  const esc = String.fromCharCode(27);
+  return (code, text) => (color ? `${esc}[${code}m${text}${esc}[0m` : text);
+}
 
-Usage:
-  gforge <command> [options]
+// Colored GForge wordmark: logo + version + pillars form one cohesive purple mark.
+function banner(stream) {
+  const paint = makePaint(stream);
+  const width = LOGO.split("\n")[0].length;
+  const version = `v${VERSION}`.padStart(width); // bottom-right, aligned to the logo's right edge
+  const rawPillars = "Secure • Standardize • Govern • Scale";
+  const pillars = " ".repeat(Math.max(0, Math.floor((width - rawPillars.length) / 2))) + rawPillars; // centered under the logo
+  const tagline = "  ⚒  Governance Forge - The secret firewall behind every commit.";
+  return [
+    paint("1;3;38;5;141", LOGO), // bold italic purple
+    paint("38;5;141", version),
+    paint("1;38;5;141", pillars), // bold purple: reads as part of the logo
+    "",
+    paint("2;3", tagline), // dim italic
+    "",
+    ""
+  ].join("\n");
+}
 
-Commands:
-  install     Upgrade to the latest published version (if any) and install hooks
-  verify      Verify environment and managed hooks
-  update      Upgrade to the latest published version (if any) and refresh hooks
-  uninstall   Remove GForge-owned hooks and configuration
-  version     Print version
-  help        Print help
-
-Options:
-  --force     With install/update, reinstall the latest version even if current
-
-Environment:
-  GFORGE_AUTO_UPDATE=0     Disable automatic background upgrades (on by default)
-  GFORGE_NO_SELF_UPDATE=1  Skip the npm self-upgrade in install/update
-  GFORGE_SKIP_POSTINSTALL=1  Skip auto-setup during npm install
-`;
+function helpText(stream) {
+  const paint = makePaint(stream);
+  const header = (t) => paint("1;38;5;141", t); // bold purple section headers (match the logo)
+  const row = (n, d, pad = 14) => `  ${n.padEnd(pad)}  ${d}`; // names + descriptions: default terminal color
+  return [
+    header("Usage:"),
+    "  gforge <command> [options]",
+    "",
+    header("Options:"),
+    row("-h, --help", "Display this help"),
+    row("-v, --version", "Display the version"),
+    row("--force", "With install / update, reinstall the latest even if current"),
+    "",
+    header("Commands:"),
+    row("install", "Upgrade to the latest version (if any) and install the hooks"),
+    row("verify", "Verify the environment and installed hooks (read-only)"),
+    row("update", "Upgrade to the latest version (if any) and refresh the hooks"),
+    row("uninstall", "Remove GForge-owned hooks and restore your Git config"),
+    row("version", "Display the version"),
+    row("help", "Display this help"),
+    "",
+    header("Environment:"),
+    row("GFORGE_AUTO_UPDATE=0", "Disable automatic background upgrades (on by default)", 26),
+    row("GFORGE_NO_SELF_UPDATE=1", "Skip the npm self-upgrade in install / update", 26),
+    row("GFORGE_SKIP_POSTINSTALL=1", "Skip auto-setup during npm install", 26),
+    ""
+  ].join("\n");
 }
