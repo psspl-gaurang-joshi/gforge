@@ -211,13 +211,13 @@ async function checkScannerContent(scannerPath) {
     return {
       status: "FAIL",
       label: `${SCANNER_FILE_NAME}-content`,
-      detail: "installed engine is stale or modified — run `gforge update`"
+      detail: "installed engine is stale or modified - run `gforge update`"
     };
   } catch {
     return {
       status: "FAIL",
       label: `${SCANNER_FILE_NAME}-content`,
-      detail: "engine not found — run `gforge update`"
+      detail: "engine not found - run `gforge update`"
     };
   }
 }
