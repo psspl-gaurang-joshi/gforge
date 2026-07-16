@@ -163,9 +163,8 @@ function banner(stream) {
 
 function helpText(stream) {
   const paint = makePaint(stream);
-  const header = (t) => paint("1;38;5;141", t); // bold purple section headers
-  const key = (t) => paint("38;5;141", t); // purple option / command names
-  const row = (n, d, pad = 14) => `  ${key(n.padEnd(pad))}  ${d}`;
+  const header = (t) => paint("1;38;5;141", t); // bold purple section headers (match the logo)
+  const row = (n, d, pad = 14) => `  ${n.padEnd(pad)}  ${d}`; // names + descriptions: default terminal color
   return [
     header("Usage:"),
     "  gforge <command> [options]",
