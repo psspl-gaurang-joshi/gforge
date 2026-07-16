@@ -141,15 +141,14 @@ function banner(stream) {
   const esc = String.fromCharCode(27);
   const paint = (code, text) => (color ? `${esc}[${code}m${text}${esc}[0m` : text);
   // 1 = bold, 3 = italic, 38;5;141 = purple (256-color).
+  const version = `  v${VERSION}`;
   const tagline = "  ⚒  Governance Forge - The secret firewall behind every commit.";
   const pillars = " Secure • Standardize • Govern • Scale";
-  return `${paint("1;3;38;5;141", LOGO)}\n${paint("2;3", tagline)}\n\n${paint("38;5;141", pillars)}\n\n`;
+  return `${paint("1;3;38;5;141", LOGO)}\n${paint("2", version)}\n${paint("2;3", tagline)}\n\n${paint("38;5;141", pillars)}\n\n`;
 }
 
 function helpText() {
-  return `gforge ${VERSION}
-
-Secure global Git hooks installer for developer workstations.
+  return `Secure global Git hooks installer for developer workstations.
 
 Usage:
   gforge <command> [options]
