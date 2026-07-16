@@ -140,12 +140,22 @@ function banner(stream) {
   const color = !process.env.NO_COLOR && Boolean(stream && stream.isTTY);
   const esc = String.fromCharCode(27);
   const paint = (code, text) => (color ? `${esc}[${code}m${text}${esc}[0m` : text);
-  // 1 = bold, 3 = italic, 38;5;141 = purple (256-color).
-  const tagline = "  ⚒  Governance Forge - The secret firewall behind every commit.";
-  const pillars = " Secure • Standardize • Govern • Scale";
+  // Purple (256-color 141): logo + version + pillars form one cohesive purple mark.
   const width = LOGO.split("\n")[0].length;
-  const version = `v${VERSION}`.padStart(width); // bottom-right, aligned to the logo width
-  return `${paint("1;3;38;5;141", LOGO)}\n${paint("2;3", tagline)}\n\n${paint("38;5;141", pillars)}\n${paint("2", version)}\n\n`;
+  const cols = stream && Number.isInteger(stream.columns) && stream.columns > width ? stream.columns : width;
+  const version = `v${VERSION}`.padStart(cols); // bottom-right, to the terminal edge
+  const rawPillars = "Secure • Standardize • Govern • Scale";
+  const pillars = " ".repeat(Math.max(0, Math.floor((width - rawPillars.length) / 2))) + rawPillars; // centered under the logo
+  const tagline = "  ⚒  Governance Forge - The secret firewall behind every commit.";
+  return [
+    paint("1;3;38;5;141", LOGO), // bold italic purple
+    paint("38;5;141", version),
+    paint("1;38;5;141", pillars), // bold purple — reads as part of the logo
+    "",
+    paint("2;3", tagline), // dim italic
+    "",
+    ""
+  ].join("\n");
 }
 
 function helpText() {
