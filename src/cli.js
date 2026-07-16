@@ -19,7 +19,7 @@ export async function runCli(args, streams, options = {}) {
   const command = args[0] ?? "help";
 
   if (command === "help" || command === "--help" || command === "-h") {
-    streams.stdout.write(helpText());
+    streams.stdout.write(banner(streams.stdout) + helpText());
     return { exitCode: 0 };
   }
 
@@ -50,7 +50,7 @@ export async function runCli(args, streams, options = {}) {
     return { exitCode: report.exitCode };
   }
 
-  streams.stderr.write(`Unknown command: ${command}\n\n${helpText()}`);
+  streams.stderr.write(`${banner(streams.stderr)}Unknown command: ${command}\n\n${helpText()}`);
   return { exitCode: 1 };
 }
 
@@ -125,6 +125,27 @@ async function runMutation(command, operation, options, streams) {
   }
 }
 
+const LOGO = [
+  " ██████╗ ███████╗ ██████╗ ██████╗  ██████╗ ███████╗",
+  "██╔════╝ ██╔════╝██╔═══██╗██╔══██╗██╔════╝ ██╔════╝",
+  "██║  ███╗█████╗  ██║   ██║██████╔╝██║  ███╗█████╗  ",
+  "██║   ██║██╔══╝  ██║   ██║██╔══██╗██║   ██║██╔══╝  ",
+  "╚██████╔╝██║     ╚██████╔╝██║  ██║╚██████╔╝███████╗",
+  " ╚═════╝ ╚═╝      ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚══════╝"
+].join("\n");
+
+// Colored GForge wordmark + tagline. Colors only when the target stream is an
+// interactive terminal (and NO_COLOR is not set), so pipes / CI stay clean.
+function banner(stream) {
+  const color = !process.env.NO_COLOR && Boolean(stream && stream.isTTY);
+  const esc = String.fromCharCode(27);
+  const paint = (code, text) => (color ? `${esc}[${code}m${text}${esc}[0m` : text);
+  // 1 = bold, 3 = italic, 38;5;141 = purple (256-color).
+  const tagline = "  ⚒  Governance Forge - The secret firewall behind every commit.";
+  const pillars = " Secure • Standardize • Govern • Scale";
+  return `${paint("1;3;38;5;141", LOGO)}\n${paint("2;3", tagline)}\n\n${paint("38;5;141", pillars)}\n\n`;
+}
+
 function helpText() {
   return `gforge ${VERSION}
 
@@ -145,8 +166,8 @@ Options:
   --force     With install/update, reinstall the latest version even if current
 
 Environment:
-  GFORGE_AUTO_UPDATE=0     Disable automatic background upgrades (on by default)
-  GFORGE_NO_SELF_UPDATE=1  Skip the npm self-upgrade in install/update
+  GFORGE_AUTO_UPDATE=0       Disable automatic background upgrades (on by default)
+  GFORGE_NO_SELF_UPDATE=1    Skip the npm self-upgrade in install/update
   GFORGE_SKIP_POSTINSTALL=1  Skip auto-setup during npm install
 `;
 }
