@@ -112,7 +112,9 @@ value**. Detection runs several layers in order:
 3. **Generic secrets** — credential keywords assigned to a hardcoded value; smart
    enough to ignore `process.env.*`, function calls, `${VAR}` interpolation, and
    obvious placeholders.
-4. **Entropy** — unnamed high-entropy strings, tuned to skip Git SHAs, UUIDs, and lockfiles.
+4. **Entropy** — unnamed high-entropy strings, tuned to skip Git SHAs, UUIDs,
+   lockfiles, and file paths (a path is scored per segment, so a long import path
+   is not mistaken for a base64 blob).
 5. **Secret files** — `.env` (and `.env.*` except templates), `id_rsa`, `*.p12`/`*.pfx`,
    keystores, `.git-credentials`, `.netrc`, and more.
 
