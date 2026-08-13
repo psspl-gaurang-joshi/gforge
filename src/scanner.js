@@ -171,6 +171,7 @@ const PATH_SEGMENT = /^\.?[A-Za-z][A-Za-z0-9_.-]*$/;
 const PATH_SEGMENT_MAX_DIGITS = 2;
 const PATH_SEGMENT_MAX_DIGIT_RATIO = 0.15;
 const PATH_MIN_LOWERCASE_RATIO = 0.55;
+const IDENTIFIER_MIN_VOWEL_RATIO = 0.3; // English words ~40% vowels; random secrets ~16%
 const LOCKFILE_NAMES = new Set([
   "package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml",
   "composer.lock", "gemfile.lock", "go.sum", "cargo.lock", "poetry.lock",
@@ -230,12 +231,27 @@ export function entropyCandidates(token) {
   return looksLikePath(token) ? token.split("/").filter(Boolean) : [token];
 }
 
+// A plain identifier (camelCase / PascalCase / snake_case): identifier characters
+// only - no base64/base64url symbols (+ / = -) - with few digits and a
+// vowel-rich body. English-word names like `buildBookingMatchWhereClause` clear
+// 4.2 bits of entropy but are ~40% vowels; random base64/hex secrets are ~16%
+// vowels and digit-heavy, so they fail the vowel or the digit gate. Excluding
+// identifiers keeps ~96-99% of random-secret detection (see issue #17).
+export function looksLikeIdentifier(token) {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(token)) return false;
+  const digits = (token.match(/[0-9]/g) || []).length;
+  const fewDigits = digits <= PATH_SEGMENT_MAX_DIGITS || digits / token.length <= PATH_SEGMENT_MAX_DIGIT_RATIO;
+  const vowels = (token.match(/[aeiouAEIOU]/g) || []).length;
+  return fewDigits && vowels / token.length >= IDENTIFIER_MIN_VOWEL_RATIO;
+}
+
 function hasHighEntropyToken(line) {
   const tokens = line.match(ENTROPY_TOKEN);
   if (!tokens) return false;
   for (const token of tokens) {
     for (const candidate of entropyCandidates(token)) {
       if (candidate.length < ENTROPY_MIN_LENGTH) continue;
+      if (looksLikeIdentifier(candidate)) continue; // natural identifier name, not a secret
       if (shannonEntropy(candidate) >= ENTROPY_THRESHOLD) return true;
     }
   }
