@@ -92,6 +92,19 @@ test("entropy ignores git SHAs, UUIDs, and lockfiles", () => {
   assert.ok(!ruleIds("package-lock.json", `"integrity":"sha512-${"Zx9Kq2mV".repeat(6)}"`).includes("high-entropy-string"));
 });
 
+test("entropy does not flag ordinary long identifiers (issue #17)", () => {
+  for (const id of [
+    "buildBookingMatchWhereClause",
+    "ManagerDashboardUpcomingAnalyticsCard",
+    "UpdateLocationSummaryEmailPreferencesDto",
+    "fetchRawAudioFromPBX"
+  ]) {
+    assert.equal(ruleIds("service.ts", `  async ${id}(input) {`).includes("high-entropy-string"), false, id);
+  }
+  // But an identifier-shaped string that is actually random (vowel-sparse) is caught.
+  assert.ok(ruleIds("a.ts", 'const k = "Zx9Kq2mVbN7pLwR4tYaSdFgHjKlPoIuY"').includes("high-entropy-string"));
+});
+
 // --- entropy tokenizer: paths vs. base64 (issue #1) ------------------------
 // A long path used to be scored as one token, so the concatenation crossed the
 // threshold even when every identifier in it was ordinary. Fixtures below are
