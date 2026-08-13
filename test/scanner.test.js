@@ -178,16 +178,36 @@ test("entropyCandidates decomposes paths and leaves opaque tokens whole", () => 
     "modules",
     "webhook-implementation"
   ]);
-  // Not paths: no separator, a single segment, digit-dense segments, and
-  // uppercase-heavy tokens are all scored whole.
+  // Not paths: no separator, a single segment, base64 padding (=), or a segment
+  // that is long and random rather than a name are all scored whole.
   assert.deepEqual(entropyCandidates(AWS_SECRET_KEY), [AWS_SECRET_KEY]);
   assert.deepEqual(entropyCandidates(B64URL_TOKEN), [B64URL_TOKEN]);
   assert.deepEqual(entropyCandidates("Zx9Kq2mVbN7pLwR4tYaSdFgHjKlPoIuY"), ["Zx9Kq2mVbN7pLwR4tYaSdFgHjKlPoIuY"]);
   assert.deepEqual(entropyCandidates("/onlyonesegmentislongenough"), ["/onlyonesegmentislongenough"]);
   assert.deepEqual(entropyCandidates("aGVsbG8=/d29ybGQ="), ["aGVsbG8=/d29ybGQ="]);
+  // SCREAMING_SNAKE_CASE segments are clean const/env names, not base64 (which is
+  // mixed-case), so an all-caps path decomposes per-segment too (issue #19).
   assert.deepEqual(entropyCandidates("SRC/COMPONENTS/GLOBALFILTERSUMMARYTRIGGER"), [
-    "SRC/COMPONENTS/GLOBALFILTERSUMMARYTRIGGER"
+    "SRC",
+    "COMPONENTS",
+    "GLOBALFILTERSUMMARYTRIGGER"
   ]);
+});
+
+test("issue #19: f-string interpolation and SCREAMING_SNAKE path segments are not secrets", () => {
+  // 1) f-string / interpolated-string values are references, not literals.
+  assert.equal(ruleIds("voice_changer.py", `    headers = {"Authorization": f"Bearer {token}"}`).length, 0);
+  assert.equal(ruleIds("a.py", `auth = f"Bearer {access_token}"`).length, 0);
+  assert.equal(ruleIds("a.cs", `password = $"{dbPassword}"`).length, 0);
+  // 2) a shell/env var path with a SCREAMING_SNAKE segment is not high-entropy.
+  assert.equal(
+    ruleIds("setup.sh", `  python -m pip install -r "$BACKEND_DIR/requirements.txt"`).includes("high-entropy-string"),
+    false
+  );
+  assert.equal(entropyCandidates("BACKEND_DIR/requirements").length, 2);
+  // But real hardcoded secrets are still caught.
+  assert.ok(ruleIds("a.py", 'password = "MyR3alHardcodedValue"').includes("generic-secret-assignment"));
+  assert.ok(ruleIds("a.ts", `const k = "${AWS_SECRET_KEY}"`).includes("high-entropy-string"));
 });
 
 test("inline gforge:allow suppresses a line", () => {
