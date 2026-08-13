@@ -66,6 +66,9 @@ const VALUE_REFERENCE_ROOT_RE = /^(process|import|globalThis|window|os|System|De
 // literal (flag) rather than a reference/placeholder (ignore).
 export function looksLikeHardcodedSecret(rawValue, options = {}) {
   let value = String(rawValue).trim();
+  // A language string-prefix (Python f/r/b/u and combinations) directly before a
+  // quote: strip it so the quote is recognized, e.g. f"Bearer {token}", rb'...'.
+  value = value.replace(/^(?:[fFrRbBuU]{1,2})(?=["'`])/, "");
   const quote = value[0];
   const quoted = quote === '"' || quote === "'" || quote === "`";
   if (quoted) {
@@ -77,8 +80,10 @@ export function looksLikeHardcodedSecret(rawValue, options = {}) {
   value = value.trim();
 
   if (value.length < 4) return false;
-  // Interpolations / template placeholders are references regardless of quoting.
-  if (/\$\{|\{\{|%\(|<%|#\{/.test(value)) return false;
+  // Interpolations / template placeholders are references, not literals:
+  // ${...}, {{...}}, %(...)s, <%...%>, #{...}, and single-brace {ident} used by
+  // Python f-strings and C# interpolated strings (e.g. `Bearer {token}`).
+  if (/\$\{|\{\{|%\(|<%|#\{|\{[A-Za-z_][\w.]*\}/.test(value)) return false;
   if (!quoted) {
     // Unquoted expressions: shell vars, member access, function calls, env lookups.
     if (value.startsWith("$")) return false;
@@ -170,8 +175,8 @@ const ENTROPY_TOKEN = /[A-Za-z0-9+/=_-]{20,}/g;
 const PATH_SEGMENT = /^\.?[A-Za-z][A-Za-z0-9_.-]*$/;
 const PATH_SEGMENT_MAX_DIGITS = 2;
 const PATH_SEGMENT_MAX_DIGIT_RATIO = 0.15;
-const PATH_MIN_LOWERCASE_RATIO = 0.55;
 const IDENTIFIER_MIN_VOWEL_RATIO = 0.3; // English words ~40% vowels; random secrets ~16%
+const NAME_SEGMENT_MIN_CHECK_LENGTH = 8; // shorter path segments (src, api, v2) can't be secrets
 const LOCKFILE_NAMES = new Set([
   "package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml",
   "composer.lock", "gemfile.lock", "go.sum", "cargo.lock", "poetry.lock",
@@ -201,6 +206,20 @@ function isPathSegment(segment) {
   return digits <= PATH_SEGMENT_MAX_DIGITS || digits / segment.length <= PATH_SEGMENT_MAX_DIGIT_RATIO;
 }
 
+// A segment that reads as a name, not random base64. It must be identifier-shaped
+// with few digits (isPathSegment); then a short segment (src, api, v2, js) can
+// never be a meaningful secret, a SCREAMING_SNAKE_CASE word (BACKEND_DIR) is a
+// clean const/env name, and any longer segment must be vowel-rich like a real
+// word. Random base64 segments are long, ~19% vowels, and mixed-case, so they
+// fail every branch (see issue #19).
+function looksLikeNameSegment(segment) {
+  if (!isPathSegment(segment)) return false;
+  if (segment.length < NAME_SEGMENT_MIN_CHECK_LENGTH) return true;
+  if (/^[A-Z][A-Z0-9_]*$/.test(segment)) return true;
+  const letters = segment.replace(/[^A-Za-z]/g, "");
+  return letters.length > 0 && ratioOf(letters, /[aeiouAEIOU]/g) >= IDENTIFIER_MIN_VOWEL_RATIO;
+}
+
 // `/` belongs in ENTROPY_TOKEN because base64 secrets use it — but that also
 // makes an entire import path one token, and the concatenation scores far above
 // the bare name (`src/components/GlobalFilterSidebar/GlobalFilterSummaryTrigger`
@@ -220,9 +239,11 @@ function isPathSegment(segment) {
 function looksLikePath(token) {
   if (!token.includes("/")) return false;
   const segments = token.split("/").filter(Boolean);
-  if (segments.length < 2 || !segments.every(isPathSegment)) return false;
-  const alphanumeric = token.replace(/[^A-Za-z0-9]/g, "");
-  return ratioOf(alphanumeric, /[a-z]/g) >= PATH_MIN_LOWERCASE_RATIO;
+  if (segments.length < 2) return false;
+  // Every segment must read as a name (word or SCREAMING_SNAKE), not base64. This
+  // replaces the whole-token lowercase-ratio gate, which mis-rejected paths that
+  // contain an all-caps segment such as $BACKEND_DIR/requirements (issue #19).
+  return segments.every(looksLikeNameSegment);
 }
 
 // The strings actually scored for one matched token: a path's segments, or the
