@@ -19,16 +19,16 @@
     "global-hooks"
   ],
   "license": "Apache-2.0",
-  "author": "Gaurang Joshi (https://github.com/psspl-gaurang-joshi)",
+  "author": "Gaurang Joshi (https://github.com/psspl-gaurang)",
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/psspl-gaurang-joshi/gforge.git"
+    "url": "git+https://github.com/psspl-gaurang/gforge.git"
   },
   "bugs": {
-    "url": "https://github.com/psspl-gaurang-joshi/gforge/issues"
+    "url": "https://github.com/psspl-gaurang/gforge/issues"
   },
-  "homepage": "https://github.com/psspl-gaurang-joshi/gforge#readme",
+  "homepage": "https://github.com/psspl-gaurang/gforge#readme",
   "bin": {
     "gforge": "bin/gforge.js"
   },

@@ -211,7 +211,7 @@ platform include:
 ## Contributing
 
 Issues and pull requests are welcome at the
-[GitHub repository](https://github.com/psspl-gaurang-joshi/gforge). Please run
+[GitHub repository](https://github.com/psspl-gaurang/gforge). Please run
 `npm test` before submitting, keep changes focused, and preserve the Apache-2.0
 license header and `NOTICE`.
 
