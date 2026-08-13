@@ -165,6 +165,12 @@ export function matchFilenameRule(filePath) {
 const ENTROPY_MIN_LENGTH = 20;
 const ENTROPY_THRESHOLD = 4.2; // pure hex/decimal/UUID cannot reach this; base64-like secrets do.
 const ENTROPY_TOKEN = /[A-Za-z0-9+/=_-]{20,}/g;
+// A path segment is identifier-shaped: optionally dot-prefixed, letter-initial,
+// and carrying few digits. Random base64 segments fail on digit density.
+const PATH_SEGMENT = /^\.?[A-Za-z][A-Za-z0-9_.-]*$/;
+const PATH_SEGMENT_MAX_DIGITS = 2;
+const PATH_SEGMENT_MAX_DIGIT_RATIO = 0.15;
+const PATH_MIN_LOWERCASE_RATIO = 0.55;
 const LOCKFILE_NAMES = new Set([
   "package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml",
   "composer.lock", "gemfile.lock", "go.sum", "cargo.lock", "poetry.lock",
@@ -181,6 +187,59 @@ export function shannonEntropy(str) {
     entropy -= p * Math.log2(p);
   }
   return entropy;
+}
+
+function ratioOf(str, pattern) {
+  if (!str) return 0;
+  return (str.match(pattern) || []).length / str.length;
+}
+
+function isPathSegment(segment) {
+  if (!PATH_SEGMENT.test(segment)) return false;
+  const digits = (segment.match(/[0-9]/g) || []).length;
+  return digits <= PATH_SEGMENT_MAX_DIGITS || digits / segment.length <= PATH_SEGMENT_MAX_DIGIT_RATIO;
+}
+
+// `/` belongs in ENTROPY_TOKEN because base64 secrets use it — but that also
+// makes an entire import path one token, and the concatenation scores far above
+// the bare name (`src/components/GlobalFilterSidebar/GlobalFilterSummaryTrigger`
+// is 4.229; `GlobalFilterSummaryTrigger` alone is 3.825). So a path is scored
+// per segment instead of whole.
+//
+// The gate is the load-bearing part. Splitting *every* token on `/` costs real
+// detection, because standard base64 uses `/` as an alphabet character: over
+// random 40-char AWS secret access keys, unconditional splitting drops
+// detection to ~86%. Requiring identifier-shaped segments plus a
+// lowercase-heavy token holds that at ~99.8%, since random base64 is only ~40%
+// lowercase and its segments carry ~25% digits.
+//
+// Deliberately splits on `/` only. `-` and `_` are the base64url alphabet, so
+// splitting on them too would cut detection of a token embedded in a URL path
+// (e.g. `/auth/reset/<base64url>`) from 100% to ~95%.
+function looksLikePath(token) {
+  if (!token.includes("/")) return false;
+  const segments = token.split("/").filter(Boolean);
+  if (segments.length < 2 || !segments.every(isPathSegment)) return false;
+  const alphanumeric = token.replace(/[^A-Za-z0-9]/g, "");
+  return ratioOf(alphanumeric, /[a-z]/g) >= PATH_MIN_LOWERCASE_RATIO;
+}
+
+// The strings actually scored for one matched token: a path's segments, or the
+// token itself.
+export function entropyCandidates(token) {
+  return looksLikePath(token) ? token.split("/").filter(Boolean) : [token];
+}
+
+function hasHighEntropyToken(line) {
+  const tokens = line.match(ENTROPY_TOKEN);
+  if (!tokens) return false;
+  for (const token of tokens) {
+    for (const candidate of entropyCandidates(token)) {
+      if (candidate.length < ENTROPY_MIN_LENGTH) continue;
+      if (shannonEntropy(candidate) >= ENTROPY_THRESHOLD) return true;
+    }
+  }
+  return false;
 }
 
 function looksBinary(content) {
@@ -274,22 +333,14 @@ export function scanText(filePath, content, options = {}) {
       }
     }
 
-    if (!skipEntropy) {
-      const tokens = line.match(ENTROPY_TOKEN);
-      if (tokens) {
-        for (const token of tokens) {
-          if (token.length < ENTROPY_MIN_LENGTH) continue;
-          if (shannonEntropy(token) >= ENTROPY_THRESHOLD) {
-            findings.push({
-              file: filePath,
-              line: lineNumber,
-              ruleId: "high-entropy-string",
-              description: "high-entropy string with no recognizable name"
-            });
-            break; // one entropy finding per line is enough
-          }
-        }
-      }
+    // One entropy finding per line is enough.
+    if (!skipEntropy && hasHighEntropyToken(line)) {
+      findings.push({
+        file: filePath,
+        line: lineNumber,
+        ruleId: "high-entropy-string",
+        description: "high-entropy string with no recognizable name"
+      });
     }
   }
 

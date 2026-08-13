@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   decodeBlob,
+  entropyCandidates,
   formatReport,
   isEnvTemplate,
   matchFilenameRule,
@@ -89,6 +90,91 @@ test("entropy ignores git SHAs, UUIDs, and lockfiles", () => {
   assert.ok(!ruleIds("a", "rev 9e3c1f2a5b7d8e0a1c2b3d4e5f60718293a4b5c6").includes("high-entropy-string"));
   assert.ok(!ruleIds("a", "id=123e4567-e89b-12d3-a456-426614174000").includes("high-entropy-string"));
   assert.ok(!ruleIds("package-lock.json", `"integrity":"sha512-${"Zx9Kq2mV".repeat(6)}"`).includes("high-entropy-string"));
+});
+
+// --- entropy tokenizer: paths vs. base64 (issue #1) ------------------------
+// A long path used to be scored as one token, so the concatenation crossed the
+// threshold even when every identifier in it was ordinary. Fixtures below are
+// real lines from an audited monorepo.
+
+const AWS_SECRET_KEY = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"; // canonical AWS example key, 40 b64 chars, two "/"
+const B64URL_TOKEN = "kM8Yq-3xZv7TbN2wRp5LsJ4hGf9dCe1aUiOoPqXyZmA"; // 43 chars, "-" and "_" are alphabet here
+
+test("entropy scores path segments, not the whole path", () => {
+  // The concatenated path scores 4.229; the bare identifier scores 3.825.
+  const importLine =
+    "import GlobalFilterSummaryTrigger from 'src/components/GlobalFilterSidebar/GlobalFilterSummaryTrigger'";
+  assert.equal(ruleIds("Layout.tsx", importLine).length, 0);
+  assert.equal(ruleIds("x.tsx", "from 'src/components/agent-dashboard/AgentCallVolumeChart'").length, 0);
+  assert.equal(ruleIds("x.ts", " * documents/modules/webhook-implementation/bug-fix/).").length, 0);
+  // Dotfile directory segments, i.e. build caches.
+  assert.equal(ruleIds("x.js", "// node_modules/.vite/deps/chunk-QWERTYUIOP").length, 0);
+  // Version and acronym segments carry digits without being random.
+  assert.equal(ruleIds("x.ts", "from 'client/src/api/v2/endpoints/CustomerBookingEndpoints'").length, 0);
+  assert.equal(ruleIds("x.ts", "from 'src/modules/oauth2/strategies/GoogleOAuth2Strategy'").length, 0);
+  assert.equal(ruleIds("x.ts", "from 'src/aws/s3/S3StorageAdapterFactory'").length, 0);
+});
+
+test("entropy leaves ordinary path-shaped prose alone", () => {
+  // Markdown links, CDN URLs, scoped package names, and deep relative paths all
+  // tokenize as one long "/"-joined string.
+  assert.equal(ruleIds("README.md", "See [the guide](documents/modules/webhook-implementation/setup/).").length, 0);
+  assert.equal(ruleIds("index.html", '<script src="https://cdn.example.com/static/js/main-chunk"></script>').length, 0);
+  assert.equal(ruleIds("x.ts", "import { thing } from '@babel/plugin-transform-runtime/lib/helpers'").length, 0);
+  assert.equal(ruleIds("x.ts", "from '../../../shared/infrastructure/persistence/RepositoryFactory'").length, 0);
+  assert.equal(ruleIds("Makefile", "OUT := build/artifacts/linux-amd64/release-bundle").length, 0);
+});
+
+test("path splitting does not hide base64 secrets containing a slash", () => {
+  // The AWS key's segments look identifier-ish; only the lowercase-ratio gate
+  // keeps it out of the path branch. Losing this is the whole risk of the fix.
+  assert.ok(ruleIds("a.ts", `const k = "${AWS_SECRET_KEY}"`).includes("high-entropy-string"));
+  assert.ok(ruleIds("a.env", `AWS_SECRET_ACCESS_KEY=${AWS_SECRET_KEY}`).includes("high-entropy-string"));
+  // base64url shapes, including one sitting in a URL path — the case that rules
+  // out also splitting on "-" and "_".
+  assert.ok(ruleIds("a.ts", `sig = '${B64URL_TOKEN}'`).includes("high-entropy-string"));
+  assert.ok(ruleIds("a.ts", `url = '/auth/reset/${B64URL_TOKEN}'`).includes("high-entropy-string"));
+  assert.ok(ruleIds("a.ts", `url = '/api/v1/token/${B64URL_TOKEN}'`).includes("high-entropy-string"));
+  // Padded base64 with slashes, and a long opaque blob.
+  assert.ok(ruleIds("a.ts", 'blob = "Zm9vL2Jhci9iYXo/cXV4Kzk4NzY1NDMyMTBhYmNkZWY="').includes("high-entropy-string"));
+});
+
+test("a high-entropy segment inside a path is still flagged", () => {
+  // Splitting must not blanket-exempt anything containing a "/". A hashed
+  // filename is a real (if low-value) hit: the segment alone scores 4.316.
+  assert.ok(ruleIds("index.html", 'href="/assets/vendor-apexcharts-BlCFUAhW.js"').includes("high-entropy-string"));
+  // A secret concatenated onto a legitimate path prefix stays visible.
+  assert.ok(ruleIds("a.ts", `const u = 'src/components/${AWS_SECRET_KEY}'`).includes("high-entropy-string"));
+});
+
+test("a path and a secret on the same line still yields a finding", () => {
+  const line = `import x from 'src/components/agent-dashboard/AgentCallVolumeChart'; const k = "${AWS_SECRET_KEY}";`;
+  assert.ok(ruleIds("x.ts", line).includes("high-entropy-string"));
+});
+
+test("entropyCandidates decomposes paths and leaves opaque tokens whole", () => {
+  assert.deepEqual(entropyCandidates("src/components/GlobalFilterSidebar/GlobalFilterSummaryTrigger"), [
+    "src",
+    "components",
+    "GlobalFilterSidebar",
+    "GlobalFilterSummaryTrigger"
+  ]);
+  // Leading and trailing separators must not produce empty candidates.
+  assert.deepEqual(entropyCandidates("/documents/modules/webhook-implementation/"), [
+    "documents",
+    "modules",
+    "webhook-implementation"
+  ]);
+  // Not paths: no separator, a single segment, digit-dense segments, and
+  // uppercase-heavy tokens are all scored whole.
+  assert.deepEqual(entropyCandidates(AWS_SECRET_KEY), [AWS_SECRET_KEY]);
+  assert.deepEqual(entropyCandidates(B64URL_TOKEN), [B64URL_TOKEN]);
+  assert.deepEqual(entropyCandidates("Zx9Kq2mVbN7pLwR4tYaSdFgHjKlPoIuY"), ["Zx9Kq2mVbN7pLwR4tYaSdFgHjKlPoIuY"]);
+  assert.deepEqual(entropyCandidates("/onlyonesegmentislongenough"), ["/onlyonesegmentislongenough"]);
+  assert.deepEqual(entropyCandidates("aGVsbG8=/d29ybGQ="), ["aGVsbG8=/d29ybGQ="]);
+  assert.deepEqual(entropyCandidates("SRC/COMPONENTS/GLOBALFILTERSUMMARYTRIGGER"), [
+    "SRC/COMPONENTS/GLOBALFILTERSUMMARYTRIGGER"
+  ]);
 });
 
 test("inline gforge:allow suppresses a line", () => {
