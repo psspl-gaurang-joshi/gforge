@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  GENERIC_SECRET_RULE_ID,
   decodeBlob,
   entropyCandidates,
   formatReport,
@@ -208,6 +209,65 @@ test("issue #19: f-string interpolation and SCREAMING_SNAKE path segments are no
   // But real hardcoded secrets are still caught.
   assert.ok(ruleIds("a.py", 'password = "MyR3alHardcodedValue"').includes("generic-secret-assignment"));
   assert.ok(ruleIds("a.ts", `const k = "${AWS_SECRET_KEY}"`).includes("high-entropy-string"));
+});
+
+test("issue #23: the generic rule does not mine bogus values out of log statements", () => {
+  // The keyword and its ':' sit INSIDE a string literal, so the quote that follows
+  // is that string's CLOSING quote -- previously mistaken for the start of a value.
+  assert.equal(ruleIds("sw.ts", "console.error('[AuthManager] Failed to clear auth:', error);").length, 0);
+  assert.equal(ruleIds("sw.ts", "console.error('[SERVICE_WORKER] Failed to clear token:', error);").length, 0);
+  // Here the stray quote pairs with a later, unrelated literal, yielding the
+  // expression fragment ", authState.token ?".
+  assert.equal(
+    ruleIds("conn.ts", "console.log('[Connection] Using auth token:', authState.token ? 'Present' : 'Missing');").length,
+    0
+  );
+  assert.equal(ruleIds("log.ts", "logger.info('auth token: ' + t)").length, 0);
+});
+
+test("issue #23: labels, auth schemes, and route templates are not credentials", () => {
+  // A value that is just the name of the thing is a label.
+  assert.equal(ruleIds("routes.ts", 'export const AUTH = "auth";').length, 0);
+  assert.equal(ruleIds("consts.ts", 'BEARER: "Bearer"').length, 0);
+  // An Authorization value names its scheme first; judge what follows it.
+  assert.equal(ruleIds("README.md", '-H "Authorization: Bearer YOUR_JWT_TOKEN"').length, 0);
+  // A route template is a placeholder, not a value.
+  assert.equal(ruleIds("routes.ts", 'export const CHANGE_PASSWORD = "changepassword/:uuid";').length, 0);
+  // A constant whose value just restates its own name is a label.
+  assert.equal(
+    ruleIds("keys.ts", 'export const CALL_HISTORY_SKIP_DEFAULT_FILTERS_SESSION_KEY = "call-history-skip-default-filters";').length,
+    0
+  );
+});
+
+test("issue #23: the same shapes carrying a REAL credential are still blocked", () => {
+  // The scheme is stripped, not trusted: a real token after it must still flag.
+  assert.ok(ruleIds("a.txt", "Authorization: Bearer abcdef2345token").includes(GENERIC_SECRET_RULE_ID));
+  assert.ok(ruleIds("a.sh", 'curl -H "Authorization: Basic YWRtaW46czNjcjN0"').includes(GENERIC_SECRET_RULE_ID));
+  assert.ok(ruleIds("c.ts", 'BEARER: "Bearer aX9kQm2pLw8vRt4z"').includes(GENERIC_SECRET_RULE_ID));
+  // A label-shaped constant name with a real value is still a hardcoded secret.
+  assert.ok(ruleIds("c.ts", 'const AUTH = "s3cr3tAuthValue123";').includes(GENERIC_SECRET_RULE_ID));
+  // A route prefix does not launder a token appended to it: one random-looking
+  // segment means the path is not a template. Lowercase shapes matter most here --
+  // hex beginning a-f and all-lowercase tokens are lowercase like a route word,
+  // and entropy alone cannot separate them.
+  assert.ok(
+    ruleIds("r.ts", 'export const TOKEN = "changepassword/:uuid/aX9kQm2pLw8vRt4zNc";').includes(GENERIC_SECRET_RULE_ID)
+  );
+  assert.ok(
+    ruleIds("r.ts", 'const token = "changepassword/:uuid/a3f9b2c8d1e4f7a2b9c3d8e1f4a7b2c9";').includes(GENERIC_SECRET_RULE_ID)
+  );
+  assert.ok(
+    ruleIds("r.ts", 'const token = "changepassword/:uuid/qwrtypsdfghjklzxcvbnmqwe";').includes(GENERIC_SECRET_RULE_ID)
+  );
+  // A descriptive key name does not launder a real value: the key-echo rule only
+  // fires when the value is spelled out INSIDE the key, never the reverse.
+  assert.ok(
+    ruleIds("keys.ts", 'export const CALL_HISTORY_SESSION_KEY = "aX9kQm2pLw8vRt4zNc";').includes(GENERIC_SECRET_RULE_ID)
+  );
+  // A quoted value is still read normally when the quotes are balanced.
+  assert.ok(ruleIds("a.sh", `PASSWORD="it's-a-s3cr3t"`).includes(GENERIC_SECRET_RULE_ID));
+  assert.ok(ruleIds("a.js", `const token = "abc123def456" // user's key`).includes(GENERIC_SECRET_RULE_ID));
 });
 
 test("inline gforge:allow suppresses a line", () => {

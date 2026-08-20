@@ -59,8 +59,61 @@ export const PROVIDER_RULES = [
 export const GENERIC_SECRET_RULE_ID = "generic-secret-assignment";
 const GENERIC_SECRET_DESCRIPTION = "hardcoded value assigned to a credential keyword";
 const GENERIC_KEYWORD_RE = /(?:^|[^A-Za-z0-9])(?:passwd|password|passphrase|pwd|pass|secret(?:[_-]?key)?|token|access[_-]?token|auth(?:[_-]?token)?|authorization|bearer|api[_-]?key|apikey|access[_-]?key|client[_-]?secret|private[_-]?key|encryption[_-]?key|signing[_-]?key|session[_-]?key|connection[_-]?string|conn[_-]?str|credentials?)["'`]?\s*[:=]\s*(\S.*)$/i;
-const VALUE_PLACEHOLDER_RE = /^(your|my|the|changeme|change[_-]?me|example|placeholder|redacted|dummy|sample|test|none|null|nil|undefined|true|false|xxx+|x{3,}|\*+|todo|tbd|password|passwd|secret|token|value|string)$/i;
+const VALUE_PLACEHOLDER_RE = /^(your|my|the|changeme|change[_-]?me|example|placeholder|redacted|dummy|sample|test|none|null|nil|undefined|true|false|xxx+|x{3,}|\*+|todo|tbd|password|passwd|secret|token|value|string|auth|authorization|key|apikey|api[_-]?key|credentials?)$/i;
 const VALUE_REFERENCE_ROOT_RE = /^(process|import|globalThis|window|os|System|Deno|ENV|env|config|configService|vault|secret|secrets|settings)$/i;
+// An Authorization value names its scheme before the credential ("Bearer <jwt>",
+// "Basic <base64>"). The scheme is a label, so judge what FOLLOWS it: a real
+// token after it must still flag, a bare scheme name must not (issue #23).
+const AUTH_SCHEME_PREFIX_RE = /^(?:bearer|basic|digest|negotiate|oauth|jwt|token|apikey|api[_-]?key)\b[\s:]*/i;
+// Expression punctuation cannot begin a credential literal. Catches the wreckage
+// left when a keyword sat inside a string literal and the capture therefore
+// starts at a stray quote (issue #23).
+const VALUE_FRAGMENT_START_RE = /^[,;:)\]}?]/;
+
+// A route/path template ("changepassword/:uuid") is a placeholder, not a value.
+// Every segment must be a plain lowercase word or a :param — one mixed-case or
+// random-looking segment means the path carries a real token and stays eligible,
+// so a secret appended to a route prefix is still caught (issue #23).
+const ROUTE_SEGMENT_RE = /^[a-z][a-z0-9-]*$/;
+const ROUTE_SEGMENT_MAX_LENGTH = 20; // real route words; secrets run longer
+// Below IDENTIFIER_MIN_VOWEL_RATIO because compound route words are vowel-poor
+// ("changepassword" is 0.286), while random lowercase letters sit near 0.19.
+const ROUTE_MIN_VOWEL_RATIO = 0.25;
+
+// A route segment is a WORD, not a blob. Lowercase is not enough on its own: hex
+// beginning a-f ("a3f9b2c8…") and an all-lowercase token are lowercase too, and
+// entropy cannot separate them (24 random lowercase letters score under the 4.2
+// gate). Length, digit density, and vowel ratio can — so a secret cannot ride
+// into the allowlist behind a route prefix.
+function looksLikeRouteSegment(segment) {
+  const word = segment.replace(/^:/, "");
+  if (!ROUTE_SEGMENT_RE.test(word)) return false;
+  if (word.length > ROUTE_SEGMENT_MAX_LENGTH) return false;
+  const digits = (word.match(/[0-9]/g) || []).length;
+  if (digits > PATH_SEGMENT_MAX_DIGITS && digits / word.length > PATH_SEGMENT_MAX_DIGIT_RATIO) return false;
+  if (word.length < NAME_SEGMENT_MIN_CHECK_LENGTH) return true; // api, v1, uuid
+  const letters = word.replace(/[^a-z]/g, "");
+  return letters.length > 0 && ratioOf(letters, /[aeiou]/g) >= ROUTE_MIN_VOWEL_RATIO;
+}
+function looksLikeRouteTemplate(value) {
+  if (!/[/]:[A-Za-z_]/.test(value)) return false;
+  return value.split("/").filter(Boolean).every(looksLikeRouteSegment);
+}
+
+// A constant whose value merely restates its own name is a label, not a
+// credential: CALL_HISTORY_..._SESSION_KEY = "call-history-skip-default-filters".
+// Only the "value is spelled out inside the key" direction counts — a random
+// secret cannot appear inside the identifier that names it, whereas the reverse
+// would suppress a real one (AUTH = "s3cr3tAuthValue123") (issue #23).
+const KEY_IDENTIFIER_RE = /([A-Za-z_][\w.$-]*)\s*["'`]?\s*[:=]\s*$/;
+function echoesItsKey(value, keyContext) {
+  if (!keyContext) return false;
+  const key = keyContext.match(KEY_IDENTIFIER_RE);
+  if (!key) return false;
+  const flatten = (text) => text.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const flatValue = flatten(value);
+  return flatValue.length >= 4 && flatten(key[1]).includes(flatValue);
+}
 
 // Decide whether the value assigned to a credential keyword is a hardcoded
 // literal (flag) rather than a reference/placeholder (ignore).
@@ -73,17 +126,30 @@ export function looksLikeHardcodedSecret(rawValue, options = {}) {
   const quoted = quote === '"' || quote === "'" || quote === "`";
   if (quoted) {
     const end = value.indexOf(quote, 1);
-    value = end === -1 ? value.slice(1) : value.slice(1, end);
-  } else {
-    value = value.split(/[\s,;)}\]]/)[0];
+    // No closing quote: this quote CLOSES a string the keyword sat inside, so the
+    // ':' was prose, not an assignment operator. A real `password = "…` without a
+    // closing quote is a syntax error, whereas
+    // `console.error('failed to clear auth:', err)` is everyday code (issue #23).
+    if (end === -1) return false;
+    value = value.slice(1, end);
+  }
+  // Drop the scheme label so the credential itself is judged.
+  value = value.replace(AUTH_SCHEME_PREFIX_RE, "").trim();
+  if (!quoted) {
+    // Unquoted: the value ends at the first separator. A trailing quote closes the
+    // string this value was embedded in (-H "Authorization: Bearer TOKEN").
+    value = value.split(/[\s,;)}\]]/)[0].replace(/["'`]+$/, "");
   }
   value = value.trim();
 
   if (value.length < 4) return false;
+  // An expression fragment, not a literal.
+  if (VALUE_FRAGMENT_START_RE.test(value)) return false;
   // Interpolations / template placeholders are references, not literals:
   // ${...}, {{...}}, %(...)s, <%...%>, #{...}, and single-brace {ident} used by
   // Python f-strings and C# interpolated strings (e.g. `Bearer {token}`).
   if (/\$\{|\{\{|%\(|<%|#\{|\{[A-Za-z_][\w.]*\}/.test(value)) return false;
+  if (looksLikeRouteTemplate(value)) return false;
   if (!quoted) {
     // Unquoted expressions: shell vars, member access, function calls, env lookups.
     if (value.startsWith("$")) return false;
@@ -97,6 +163,7 @@ export function looksLikeHardcodedSecret(rawValue, options = {}) {
   // Env-name-like placeholders (DB_PASSWORD) and common dummy values.
   if (/^[A-Z][A-Z0-9_]{2,}$/.test(value)) return false;
   if (VALUE_PLACEHOLDER_RE.test(value)) return false;
+  if (echoesItsKey(value, options.keyContext)) return false;
   if (/^<.*>$/.test(value) || value === "...") return false;
 
   return true;
@@ -360,7 +427,10 @@ export function scanText(filePath, content, options = {}) {
 
     if (includeGeneric) {
       const match = line.match(GENERIC_KEYWORD_RE);
-      if (match && looksLikeHardcodedSecret(match[1], { codeFile })) {
+      // Everything left of the value: the capture runs to end of line, so the
+      // remainder names the key the value was assigned to.
+      const keyContext = match ? line.slice(0, line.length - match[1].length) : "";
+      if (match && looksLikeHardcodedSecret(match[1], { codeFile, keyContext })) {
         findings.push({
           file: filePath,
           line: lineNumber,
