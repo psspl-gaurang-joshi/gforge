@@ -183,9 +183,10 @@ function helpText(stream) {
     row("help", "Display this help"),
     "",
     header("Environment:"),
-    row("GFORGE_AUTO_UPDATE=0", "Disable automatic background upgrades (on by default)", 26),
-    row("GFORGE_NO_SELF_UPDATE=1", "Skip the npm self-upgrade in install / update", 26),
-    row("GFORGE_SKIP_POSTINSTALL=1", "Skip auto-setup during npm install", 26),
+    row("GFORGE_AUTO_UPDATE=0", "Disable automatic background upgrades (on by default)", 30),
+    row("GFORGE_NO_SELF_UPDATE=1", "Skip the npm self-upgrade in install / update", 30),
+    row("GFORGE_SKIP_POSTINSTALL=1", "Skip auto-setup during npm install", 30),
+    row("GFORGE_NO_DEFAULT_EXCLUDES=1", "Scan translations, docs and build output too", 30),
     ""
   ].join("\n");
 }

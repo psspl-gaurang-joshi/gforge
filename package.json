@@ -1,6 +1,6 @@
 {
   "name": "gforge",
-  "version": "0.3.6",
+  "version": "0.3.7",
   "description": "A git firewall: a global pre-commit hook that blocks commits containing secrets (passwords, keys, tokens, .env files) across macOS, Linux, and Windows.",
   "keywords": [
     "git",

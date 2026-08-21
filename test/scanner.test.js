@@ -6,6 +6,7 @@ import {
   decodeBlob,
   entropyCandidates,
   formatReport,
+  isHeuristicExemptPath,
   isEnvTemplate,
   matchFilenameRule,
   parseAllowlist,
@@ -193,6 +194,65 @@ test("entropyCandidates decomposes paths and leaves opaque tokens whole", () => 
     "COMPONENTS",
     "GLOBALFILTERSUMMARYTRIGGER"
   ]);
+});
+
+test("issue #24: translation catalogues, docs and build output skip the heuristic rules", () => {
+  // "Password": "Passwort" is the normal shape of a translation entry.
+  assert.equal(ruleIds("client/src/translations/hi/common.json", '  "Password": "पासवर्ड",').length, 0);
+  assert.equal(ruleIds("client/src/translations/hi/common.json", '  "clientSecret": "क्लाइंट सीक्रेट",').length, 0);
+  assert.equal(ruleIds("client/src/translations/en/common.json", '  "clientSecret": "Client Secret",').length, 0);
+  assert.equal(ruleIds("client/src/translations/de/common.json", '  "token": "Authentifizierungstoken",').length, 0);
+  assert.equal(ruleIds("client/src/translations/fr/common.json", `  "token": "Jeton d'authentification",`).length, 0);
+  assert.equal(ruleIds("server/src/i18n/en/responseMessage.json", '  "invalidPassword": "The password you entered is incorrect",').length, 0);
+  assert.equal(ruleIds("resources/lang/es/auth.php", "'password' => 'La contrasena es incorrecta',").length, 0);
+  // Docs and build output.
+  assert.equal(ruleIds("server/src/core/logger/README.md", "password: your-database-password").length, 0);
+  assert.equal(ruleIds("documents/features/auth.md", "| clientSecret | shhh-do-not-share-this |").length, 0);
+  assert.equal(ruleIds("client/dist/index.html", 'var token="anonymous-public-widget-token";').length, 0);
+  // The generic rule now has the skip list the entropy rule already had.
+  assert.equal(ruleIds("server/package-lock.json", '  "token": "abcd1234efgh5678",').length, 0);
+  assert.equal(ruleIds("a/b.min.js", 'var password="abcd1234efgh5678";').length, 0);
+});
+
+test("issue #24: exemptions are path-scoped and never disable the high-confidence rules", () => {
+  // Provider rules, which carry no false-positive risk, still fire everywhere.
+  for (const path of [
+    "client/dist/index.html",
+    "docs/setup.md",
+    "client/src/translations/hi/common.json",
+    "server/package-lock.json"
+  ]) {
+    assert.ok(ruleIds(path, "AKIAIOSFODNN7EXAMPLE").includes("aws-access-key-id"), path);
+    assert.ok(ruleIds(path, `k = "sk_live_${"a".repeat(24)}"`).includes("stripe-secret-key"), path);
+    assert.ok(ruleIds(path, "-----BEGIN RSA PRIVATE KEY-----").includes("private-key"), path);
+  }
+  // Lookalike directory names are ordinary source and stay fully scanned.
+  for (const path of [
+    "src/distributor/api.ts",
+    "src/building/service.ts",
+    "src/outbound/mailer.ts",
+    "src/language/parser.ts",
+    "server/src/i18nUtils.ts",
+    "config.txt"
+  ]) {
+    assert.ok(ruleIds(path, 'const password = "S3cr3tDbP4ssw0rd";').includes(GENERIC_SECRET_RULE_ID), path);
+  }
+  assert.equal(isHeuristicExemptPath("client/src/translations/hi/common.json"), "i18n");
+  assert.equal(isHeuristicExemptPath("README.md"), "docs");
+  assert.equal(isHeuristicExemptPath("client/dist/index.html"), "generated");
+  assert.equal(isHeuristicExemptPath("src/config/db.js"), null);
+  // Windows separators classify the same way.
+  assert.equal(isHeuristicExemptPath("client\\dist\\index.html"), "generated");
+  // The exclusions can be switched off entirely.
+  assert.equal(isHeuristicExemptPath("client/dist/index.html", { GFORGE_NO_DEFAULT_EXCLUDES: "1" }), null);
+});
+
+test("issue #24: the non-Latin guard does not hide a real credential", () => {
+  // A translated label in a data file is not a secret...
+  assert.equal(ruleIds("client/messages/hi.json", '"Password": "पासवर्ड"').length, 0);
+  // ...but a human-chosen password in application code still is, script regardless.
+  assert.ok(ruleIds("app.js", 'const password = "пароль123";').includes(GENERIC_SECRET_RULE_ID));
+  assert.ok(ruleIds("app.js", 'const password = "пароль";').includes(GENERIC_SECRET_RULE_ID));
 });
 
 test("issue #19: f-string interpolation and SCREAMING_SNAKE path segments are not secrets", () => {
