@@ -115,7 +115,10 @@ value**. Detection runs several layers in order:
 4. **Entropy** — unnamed high-entropy strings, tuned to skip Git SHAs, UUIDs,
    lockfiles, and file paths (a path is scored per segment, so a long import path
    is not mistaken for a base64 blob).
-5. **Secret files** — `.env` (and `.env.*` except templates), `id_rsa`, `*.p12`/`*.pfx`,
+5. **Secret files** — `.env` (and `.env.*` unless its final extension marks it a
+   template: `.example`, `.sample`, `.template`, `.dist`, `.defaults`, `.tpl`,
+   `.test` — so `.env.cron-backfill.example` is treated as a template too),
+   `id_rsa`, `*.p12`/`*.pfx`,
    keystores, `.git-credentials`, `.netrc`, and more.
 
 Detection is best-effort and complements — not replaces — good secret hygiene.

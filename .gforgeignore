@@ -4,3 +4,6 @@
 # used to define and exercise detection.
 ^src/scanner\.js$
 ^test/scanner\.test\.js$
+# The README documents what a secret looks like and walks through a demo commit
+# that stages a fake credential, so it is secret-shaped by design.
+^README\.md$

@@ -59,7 +59,23 @@ export const PROVIDER_RULES = [
 export const GENERIC_SECRET_RULE_ID = "generic-secret-assignment";
 const GENERIC_SECRET_DESCRIPTION = "hardcoded value assigned to a credential keyword";
 const GENERIC_KEYWORD_RE = /(?:^|[^A-Za-z0-9])(?:passwd|password|passphrase|pwd|pass|secret(?:[_-]?key)?|token|access[_-]?token|auth(?:[_-]?token)?|authorization|bearer|api[_-]?key|apikey|access[_-]?key|client[_-]?secret|private[_-]?key|encryption[_-]?key|signing[_-]?key|session[_-]?key|connection[_-]?string|conn[_-]?str|credentials?)["'`]?\s*[:=]\s*(\S.*)$/i;
-const VALUE_PLACEHOLDER_RE = /^(your|my|the|changeme|change[_-]?me|example|placeholder|redacted|dummy|sample|test|none|null|nil|undefined|true|false|xxx+|x{3,}|\*+|todo|tbd|password|passwd|secret|token|value|string|auth|authorization|key|apikey|api[_-]?key|credentials?)$/i;
+// Placeholder shapes shared by the generic rule and the .env cross-reference.
+// These two lists had drifted: the dotenv layer knew `your_db_password` was a
+// placeholder while the generic rule did not, so every `KEY=your_*` line in a
+// committed template was reported as a hardcoded credential. Defining the shared
+// core once means they cannot drift again (issue #25).
+const PLACEHOLDER_ALTERNATIVES = [
+  "your[_-].*", // your_db_password, your-api-key
+  "my[_-].*", // my_secret_value
+  ".*[_-]here", // replace_me_here, your_key_here
+  "changeme", "change[_-]?me", "example", "placeholder", "redacted", "dummy",
+  "sample", "todo", "tbd", "xxx+"
+].join("|");
+
+const VALUE_PLACEHOLDER_RE = new RegExp(
+  `^(?:${PLACEHOLDER_ALTERNATIVES}|your|my|the|test|none|null|nil|undefined|true|false|x{3,}|\\*+|password|passwd|secret|token|value|string|auth|authorization|key|apikey|api[_-]?key|credentials?)$`,
+  "i"
+);
 const VALUE_REFERENCE_ROOT_RE = /^(process|import|globalThis|window|os|System|Deno|ENV|env|config|configService|vault|secret|secrets|settings)$/i;
 // An Authorization value names its scheme before the credential ("Bearer <jwt>",
 // "Basic <base64>"). The scheme is a label, so judge what FOLLOWS it: a real
@@ -191,12 +207,24 @@ function isCodeFile(filePath) {
 // ---------------------------------------------------------------------------
 const ALLOWED_ENV_SUFFIXES = new Set(["example", "sample", "template", "dist", "defaults", "tpl", "test"]);
 
+// The final dot-segment of a `.env.*` basename, or "" if this is not one.
+// Templates are routinely named descriptively — `.env.cron-cdr-backfill.example`,
+// `.env.local.example`, `.env.staging.template` — so only the LAST segment can
+// decide. Comparing the whole remainder after ".env." treated every such file as
+// a real env file: a `secret-file-env` finding plus a full content scan of what
+// is, by definition, placeholders (issue #25).
+function envSuffix(filePath) {
+  const name = basename(filePath).toLowerCase();
+  if (!name.startsWith(".env.")) return "";
+  const rest = name.slice(".env.".length);
+  const lastDot = rest.lastIndexOf(".");
+  return lastDot === -1 ? rest : rest.slice(lastDot + 1);
+}
+
 // True for env template files (.env.example, .env.sample, ...) that are meant
 // to be committed with placeholder values.
 export function isEnvTemplate(filePath) {
-  const name = basename(filePath).toLowerCase();
-  if (!name.startsWith(".env.")) return false;
-  return ALLOWED_ENV_SUFFIXES.has(name.slice(".env.".length));
+  return ALLOWED_ENV_SUFFIXES.has(envSuffix(filePath));
 }
 
 export function matchFilenameRule(filePath) {
@@ -206,11 +234,8 @@ export function matchFilenameRule(filePath) {
   if (name === ".env") {
     return { id: "secret-file-env", description: ".env file (may contain secrets)" };
   }
-  if (name.startsWith(".env.")) {
-    const suffix = name.slice(".env.".length);
-    if (!ALLOWED_ENV_SUFFIXES.has(suffix)) {
-      return { id: "secret-file-env", description: "environment file (may contain secrets)" };
-    }
+  if (name.startsWith(".env.") && !isEnvTemplate(filePath)) {
+    return { id: "secret-file-env", description: "environment file (may contain secrets)" };
   }
 
   // Private key material and credential stores.
@@ -547,7 +572,12 @@ const DOTENV_FILES = [
   ".env.staging", ".env.test", ".env.development.local", ".env.production.local"
 ];
 const DOTENV_KEY_IS_SECRET = /(pass|pwd|secret|token|key|auth|cred|api|private|access|signature|salt)/i;
-const DOTENV_VALUE_STOPLIST = /^(true|false|null|none|undefined|localhost|127\.0\.0\.1|0\.0\.0\.0|development|production|staging|test|changeme|example|placeholder|your[_-].*|xxx+)$/i;
+// Shares PLACEHOLDER_ALTERNATIVES with the generic rule (see issue #25); the
+// extras here are environment-ish values that are real but not secret.
+const DOTENV_VALUE_STOPLIST = new RegExp(
+  `^(?:${PLACEHOLDER_ALTERNATIVES}|true|false|null|none|undefined|localhost|127\\.0\\.0\\.1|0\\.0\\.0\\.0|development|production|staging|test)$`,
+  "i"
+);
 
 function looksLikeDotenvSecret(key, value) {
   if (value.length < 6) return false;
