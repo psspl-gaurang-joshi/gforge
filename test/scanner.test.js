@@ -344,6 +344,42 @@ test("filename rules block secret files but allow templates", () => {
   assert.equal(matchFilenameRule("src/app.js"), null);
 });
 
+test("multi-part env templates are templates, not real env files (issue #25)", () => {
+  // Only the LAST dot-segment decides. Descriptive template names are the norm.
+  for (const p of [
+    "server/.env.cron-cdr-backfill.example",
+    ".env.local.example",
+    ".env.staging.template",
+    ".env.ci.sample",
+    ".env.example"
+  ]) {
+    assert.ok(isEnvTemplate(p), `expected template: ${p}`);
+    assert.equal(matchFilenameRule(p), null, `expected no filename rule: ${p}`);
+  }
+  // Real env files must still be blocked — including multi-part ones.
+  for (const p of [".env", ".env.production", ".env.local", "app/.env.production.local"]) {
+    assert.ok(!isEnvTemplate(p), `expected NOT template: ${p}`);
+    assert.equal(matchFilenameRule(p)?.id, "secret-file-env", `expected secret-file-env: ${p}`);
+  }
+});
+
+test("your_* / *_here placeholders are not credentials (issue #25)", () => {
+  // The dotenv layer already knew these were placeholders; the generic rule did
+  // not, so committed templates were flagged line by line.
+  for (const line of [
+    "DB_PASS=your_db_password",
+    "PBX_OAUTH_CLIENT_SECRET=your_pbx_oauth_client_secret",
+    "API_KEY=your-api-key",
+    "SECRET=replace_me_here",
+    "TOKEN=my_secret_value"
+  ]) {
+    assert.ok(!ruleIds("config.txt", line).includes(GENERIC_SECRET_RULE_ID), line);
+  }
+  // A real value in the same shape of file is still caught.
+  assert.ok(ruleIds("config.txt", "DB_PASS=aG9yc2ViYXR0ZXJ5c3RhcGxlMTIz").includes(GENERIC_SECRET_RULE_ID));
+  assert.ok(ruleIds("config.txt", "DB_PASS=x+Wux6!wPJVy{2qf}p").includes(GENERIC_SECRET_RULE_ID));
+});
+
 test("env templates skip generic/entropy rules but still catch real tokens", () => {
   assert.ok(isEnvTemplate(".env.example"));
   assert.ok(!isEnvTemplate(".env"));
