@@ -120,6 +120,25 @@ value**. Detection runs several layers in order:
 
 Detection is best-effort and complements — not replaces — good secret hygiene.
 
+### Paths the heuristic layers skip
+
+A credential keyword followed by a colon is the *normal* shape of a translation
+entry (`"Password": "Passwort"`) and of a documentation example, so layers 3 and 4
+— the two heuristic ones — are skipped by default in:
+
+| Kind | Matched by |
+| --- | --- |
+| Translations / i18n | a `i18n`, `l10n`, `intl`, `translation(s)`, `locale(s)`, `lang(s)` directory |
+| Documentation | a `doc(s)`, `document(s)`, `documentation` directory, or a `.md`/`.mdx`/`.rst`/`.adoc` file |
+| Generated output | a `dist`, `build`, `out`, `coverage`, `vendor`, `node_modules`, `target`, `obj`, `.next`, `.nuxt` … directory |
+| Lockfiles & bundles | `package-lock.json`, `yarn.lock`, `go.sum`, … and `*.min.js`, `*.min.css`, `*.map` |
+
+**Layers 1, 2 and 5 always run, everywhere.** A real AWS, Stripe, GitHub, or
+Google credential, a private key, a `.env` file, or a value copied out of your
+`.env` is still blocked inside `dist/`, a README, or a translation catalogue —
+only the noisy keyword and entropy heuristics are quietened. Set
+`GFORGE_NO_DEFAULT_EXCLUDES=1` to scan every path with every layer.
+
 ## Managing false positives
 
 Maximum coverage occasionally flags something safe. Three escape hatches:
@@ -159,6 +178,7 @@ file to manage.
 | `GFORGE_NO_SELF_UPDATE=1` | Skip the npm self-upgrade in `install`/`update` (CI / air-gapped). |
 | `GFORGE_SKIP_POSTINSTALL=1` | Skip automatic hook setup during `npm install`. |
 | `GFORGE_NODE=/path/to/node` | Pin the Node.js runtime the hook uses. |
+| `GFORGE_NO_DEFAULT_EXCLUDES=1` | Run the heuristic layers on every path, including translations, docs, and build output. |
 
 If a repository or the system already defines its own `core.hooksPath` (e.g. Husky
 or lefthook), GForge does not override it; run `gforge install` to have GForge take

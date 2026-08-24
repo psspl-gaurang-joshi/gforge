@@ -1,3 +1,52 @@
+
+// ---------------------------------------------------------------------------
+// Content that is not hand-written application code: translation catalogues,
+// documentation, generated build output, and lockfiles. A credential keyword
+// followed by a colon is the NORMAL shape of a translation entry
+// ("Password": "Passwort") and of a docs example, so the two heuristic rules —
+// generic keyword assignment and entropy — produce nothing but noise there.
+//
+// Only those two are suppressed. Provider rules, the secret-file rules, and the
+// .env cross-reference still run on every file, so a real AWS/Stripe/GitHub
+// credential committed into dist/ or a README is still blocked (issue #24).
+// ---------------------------------------------------------------------------
+const I18N_DIRECTORIES = new Set([
+  "i18n", "l10n", "intl", "translation", "translations", "locale", "locales", "lang", "langs"
+]);
+const DOC_DIRECTORIES = new Set(["doc", "docs", "document", "documents", "documentation"]);
+// Conventional build/vendor output. Deliberately excludes "bin" and "lib", which
+// commonly hold hand-written source.
+const GENERATED_DIRECTORIES = new Set([
+  "dist", "build", "out", "output", "coverage", "vendor", "node_modules",
+  "bower_components", "target", "obj", "__pycache__", ".next", ".nuxt", ".output",
+  ".svelte-kit", ".angular", ".parcel-cache", ".turbo"
+]);
+// Documentation formats. `.txt` is deliberately absent — it is a common place for
+// real config, and the suite relies on config.txt still being scanned.
+const DOC_EXTENSIONS = new Set(["md", "mdx", "markdown", "rst", "adoc", "asciidoc"]);
+
+export function isHeuristicExemptPath(filePath, env = process.env) {
+  // Escape hatch: scan everything, exclusions off. A security tool should never
+  // have a blind spot that cannot be switched back on.
+  if (env && env.GFORGE_NO_DEFAULT_EXCLUDES) return null;
+
+  const normalized = String(filePath).replace(/\\/g, "/").toLowerCase();
+  const segments = normalized.split("/").filter(Boolean);
+  const name = segments[segments.length - 1] ?? "";
+  const directories = segments.slice(0, -1);
+
+  if (directories.some((segment) => I18N_DIRECTORIES.has(segment))) return "i18n";
+  if (directories.some((segment) => DOC_DIRECTORIES.has(segment))) return "docs";
+  if (directories.some((segment) => GENERATED_DIRECTORIES.has(segment))) return "generated";
+
+  const dot = name.lastIndexOf(".");
+  const extension = dot > 0 ? name.slice(dot + 1) : "";
+  if (DOC_EXTENSIONS.has(extension)) return "docs";
+  if (LOCKFILE_NAMES.has(name)) return "generated";
+  if (name.endsWith(".min.js") || name.endsWith(".min.css") || name.endsWith(".map")) return "generated";
+
+  return null;
+}
 // GForge secret-scanning engine.
 //
 // This module is intentionally self-contained: it imports only Node built-ins,
@@ -61,6 +110,11 @@ const GENERIC_SECRET_DESCRIPTION = "hardcoded value assigned to a credential key
 const GENERIC_KEYWORD_RE = /(?:^|[^A-Za-z0-9])(?:passwd|password|passphrase|pwd|pass|secret(?:[_-]?key)?|token|access[_-]?token|auth(?:[_-]?token)?|authorization|bearer|api[_-]?key|apikey|access[_-]?key|client[_-]?secret|private[_-]?key|encryption[_-]?key|signing[_-]?key|session[_-]?key|connection[_-]?string|conn[_-]?str|credentials?)["'`]?\s*[:=]\s*(\S.*)$/i;
 const VALUE_PLACEHOLDER_RE = /^(your|my|the|changeme|change[_-]?me|example|placeholder|redacted|dummy|sample|test|none|null|nil|undefined|true|false|xxx+|x{3,}|\*+|todo|tbd|password|passwd|secret|token|value|string|auth|authorization|key|apikey|api[_-]?key|credentials?)$/i;
 const VALUE_REFERENCE_ROOT_RE = /^(process|import|globalThis|window|os|System|Deno|ENV|env|config|configService|vault|secret|secrets|settings)$/i;
+// A letter that is not Latin script. Translated UI labels are written in the
+// target language ("Password": "पासवर्ड"), and no credential is ever spelled in
+// Devanagari, CJK, Cyrillic, Arabic, … — so this is a safe, unambiguous signal
+// for translation catalogues that sit outside a recognised i18n path (issue #24).
+const NON_LATIN_LETTER_RE = /[^\P{L}\p{Script=Latin}]/u;
 // An Authorization value names its scheme before the credential ("Bearer <jwt>",
 // "Basic <base64>"). The scheme is a label, so judge what FOLLOWS it: a real
 // token after it must still flag, a bare scheme name must not (issue #23).
@@ -160,6 +214,11 @@ export function looksLikeHardcodedSecret(rawValue, options = {}) {
     // bare word IS the literal value, so only exempt this for code files.
     if (options.codeFile && /^[A-Za-z_$][\w$]*$/.test(value)) return false;
   }
+  // A translated label, not a credential. Narrow on purpose: the value must be
+  // PURE non-Latin text (no ASCII letters or digits) and must sit in a data file,
+  // so a human-chosen password in application code — password = "пароль123", or
+  // even bare "пароль" — is still flagged.
+  if (!options.codeFile && NON_LATIN_LETTER_RE.test(value) && !/[A-Za-z0-9]/.test(value)) return false;
   // Env-name-like placeholders (DB_PASSWORD) and common dummy values.
   if (/^[A-Z][A-Z0-9_]{2,}$/.test(value)) return false;
   if (VALUE_PLACEHOLDER_RE.test(value)) return false;
@@ -389,15 +448,12 @@ function isPathAllowlisted(filePath, allowlist) {
 export function scanText(filePath, content, options = {}) {
   const findings = [];
   const name = basename(filePath).toLowerCase();
-  const skipEntropy =
-    options.entropy === false ||
-    LOCKFILE_NAMES.has(name) ||
-    name.endsWith(".min.js") ||
-    name.endsWith(".min.css") ||
-    name.endsWith(".map") ||
-    looksBinary(content);
+  // Translation catalogues, docs, build output and lockfiles: suppress the two
+  // heuristic rules, never the high-confidence ones (issue #24).
+  const exemptReason = isHeuristicExemptPath(filePath);
+  const skipEntropy = options.entropy === false || Boolean(exemptReason) || looksBinary(content);
 
-  const includeGeneric = options.generic !== false;
+  const includeGeneric = options.generic !== false && !exemptReason;
   const codeFile = isCodeFile(filePath);
   // Twilio auth tokens are bare 32-hex strings (no prefix), indistinguishable
   // from an MD5 on their own. Only treat a 32-hex string as a token when the
