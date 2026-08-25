@@ -359,6 +359,27 @@ test("issue #23: the same shapes carrying a REAL credential are still blocked", 
   assert.ok(ruleIds("a.js", `const token = "abc123def456" // user's key`).includes(GENERIC_SECRET_RULE_ID));
 });
 
+test("issue #37: appending the literal secret to a credential-keyword identifier is not a self-referential label", () => {
+  const secret = "hunter2!Real9";
+  // Same secret, same shape as the legitimate self-label exemption (the value
+  // is substring-contained in the key) - but the "extra" part of the key is
+  // the very credential keyword that made this a hardcoded-secret candidate
+  // in the first place, and the value itself is not a plain word/slug.
+  assert.ok(ruleIds("config.js", `const ${secret}_password = "${secret}";`).includes(GENERIC_SECRET_RULE_ID));
+  // Digits alone are enough to disqualify the exemption, even with no symbol
+  // character anywhere in the secret.
+  assert.ok(ruleIds("config.js", 'const A1b2c3d4e5_password = "A1b2c3d4e5";').includes(GENERIC_SECRET_RULE_ID));
+  // The legitimate exemption this rule exists for must still hold: a plain
+  // word/slug that merely restates its own name is still a label, not a
+  // credential.
+  assert.equal(ruleIds("config.js", 'const SESSION_KEY = "session-key";').length, 0);
+  assert.equal(
+    ruleIds("keys.ts", 'export const CALL_HISTORY_SKIP_DEFAULT_FILTERS_SESSION_KEY = "call-history-skip-default-filters";')
+      .length,
+    0
+  );
+});
+
 test("inline gforge:allow suppresses a line", () => {
   assert.equal(ruleIds("a", "DB_PASS=psspl@443e # gforge:allow").length, 0);
   assert.equal(ruleIds("a", "DB_PASS=psspl@443e // gitleaks:allow").length, 0);
