@@ -1,13 +1,20 @@
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, relative } from "node:path";
 import test from "node:test";
 
 import {
   GENERIC_SECRET_RULE_ID,
+  collectDotenvFiles,
   decodeBlob,
+  describeDotenvSources,
   entropyCandidates,
   formatReport,
+  isDotenvFile,
   isHeuristicExemptPath,
   isEnvTemplate,
+  loadDotenvSecrets,
   matchFilenameRule,
   parseAllowlist,
   scanStaged,
@@ -488,6 +495,68 @@ test("cross-references staged code against .env secret values", () => {
   assert.equal(clean.findings.length, 0);
 });
 
+test("cross-references .env files in package subdirectories, not just the repo root", () => {
+  // The monorepo layout from issue #26: no root .env at all, one per package.
+  const root = makeTree({
+    "server/.env": "DB_PASSWORD=Sup3rS3cretMonoValue\n",
+    "client/.env.local": "VITE_API_TOKEN=clientTok3nAbcdef123456\n",
+    "server/.env.example": "DB_PASSWORD=your_db_password\n", // template: placeholders only
+    "node_modules/some-pkg/.env": "PKG_SECRET=vendoredValue1234\n", // another project's secrets
+    "dist/.env": "BUILD_SECRET=generatedValue1234\n"
+  });
+
+  assert.deepEqual(relativeDotenvFiles(root), ["client/.env.local", "server/.env"]);
+
+  const secrets = loadDotenvSecrets(root);
+  assert.ok(secrets.includes("Sup3rS3cretMonoValue"));
+  assert.ok(secrets.includes("clientTok3nAbcdef123456"));
+  assert.equal(secrets.includes("your_db_password"), false);
+  assert.equal(secrets.includes("vendoredValue1234"), false);
+
+  // End to end: a value pasted out of server/.env into server code is blocked.
+  const leak = scanStaged({
+    ...opts, allowlist: [], dotenvSecrets: secrets,
+    files: ["server/src/db.js"], read: () => 'const pw = "Sup3rS3cretMonoValue";'
+  });
+  assert.ok(leak.findings.some((f) => f.ruleId === "hardcoded-dotenv-secret"));
+  assert.doesNotMatch(formatReport(leak), /Sup3rS3cretMonoValue/);
+});
+
+test("recognizes real env files and skips placeholder templates", () => {
+  assert.ok(isDotenvFile(".env"));
+  assert.ok(isDotenvFile("server/.env.production.local"));
+  assert.ok(isDotenvFile(".env.staging"));
+  assert.equal(isDotenvFile(".env.example"), false);
+  assert.equal(isDotenvFile(".env.local.template"), false);
+  assert.equal(isDotenvFile("env"), false);
+  assert.equal(isDotenvFile("environment.js"), false);
+});
+
+test("bounds the .env walk so a deep tree cannot stall a commit", () => {
+  const root = makeTree({
+    "a/b/c/d/e/.env": "DEEP_TOKEN=deepValue12345678\n",
+    "a/b/c/d/e/f/.env": "TOO_DEEP_TOKEN=tooDeepValue12345\n"
+  });
+
+  const found = relativeDotenvFiles(root);
+  assert.deepEqual(found, ["a/b/c/d/e/.env"]);
+});
+
+test("reports what the .env cross-reference can see, so a dead layer is visible", () => {
+  const populated = describeDotenvSources(makeTree({ "server/.env": "API_KEY=serverValue1234\n" }));
+  assert.equal(populated.inRepo, true);
+  assert.deepEqual(populated.files, ["server/.env"]);
+  assert.equal(populated.secretCount, 1);
+
+  const empty = describeDotenvSources(makeTree({ "server/index.js": "export default 1;\n" }));
+  assert.equal(empty.inRepo, true);
+  assert.deepEqual(empty.files, []);
+  assert.equal(empty.secretCount, 0);
+
+  // Outside a git repository there is nothing to describe.
+  assert.deepEqual(describeDotenvSources(null), { inRepo: false, root: null, files: [], secretCount: 0 });
+});
+
 test("decodes UTF-16/BOM blobs so Windows/PowerShell files are scanned", () => {
   const secret = "password=SuperSecretValue123";
   const utf16le = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(`${secret}\n`, "utf16le")]);
@@ -509,3 +578,21 @@ test("shannon entropy scores random strings above plain text", () => {
   assert.ok(shannonEntropy("Zx9Kq2mVbN7pLwR4tYaSdFgHjKl") > 4.2);
   assert.ok(shannonEntropy("aaaaaaaaaaaaaaaaaaaa") < 1);
 });
+
+// Materializes { "relative/path": "content" } under a fresh temp directory and
+// returns its root, for the .env discovery tests.
+function makeTree(files) {
+  const root = mkdtempSync(join(tmpdir(), "gforge-dotenv-"));
+  for (const [path, content] of Object.entries(files)) {
+    const full = join(root, path);
+    mkdirSync(join(full, ".."), { recursive: true });
+    writeFileSync(full, content);
+  }
+  return root;
+}
+
+function relativeDotenvFiles(root) {
+  return collectDotenvFiles(root)
+    .map((file) => relative(root, file).split(/[\\/]/).join("/"))
+    .sort();
+}
