@@ -33,6 +33,35 @@ test("detects a variety of hardcoded password/credential assignments", () => {
   assert.ok(ruleIds("a.env", "SESSION_KEY=9f8e7d6c5b4a3210").includes("generic-secret-assignment"));
 });
 
+test("issue #27: a compound camelCase identifier does not hide the credential keyword", () => {
+  // The exact reported cases: the keyword sits mid-identifier, preceded by a
+  // lowercase letter, which the original boundary (start-of-line or
+  // non-alphanumeric) never matched.
+  assert.ok(ruleIds("a.js", "const apiSecretKey = 'Sup3rS3cretV4lue';").includes(GENERIC_SECRET_RULE_ID));
+  assert.ok(ruleIds("a.js", "const wbAccessToken = 'Sup3rS3cretV4lue';").includes(GENERIC_SECRET_RULE_ID));
+  assert.ok(ruleIds("a.js", "const clientSecretValue = 'Sup3rS3cretV4lue';").includes(GENERIC_SECRET_RULE_ID));
+  assert.ok(ruleIds("a.js", "apiSecretKey: 'Sup3rS3cretV4lue',").includes(GENERIC_SECRET_RULE_ID));
+  // A real occurrence from the issue: a commented-out assignment using the
+  // same naming convention still finds the keyword.
+  assert.ok(ruleIds("a.js", "// const wbAccessToken = 'Sup3rS3cretV4lue';").includes(GENERIC_SECRET_RULE_ID));
+});
+
+test("issue #27: the compound-identifier match stays bounded, not a license to match anything containing the keyword", () => {
+  // "ApiKey" is a coincidental prefix of "Keyboard" here - the word after it
+  // is lowercase, not a fresh camelCase segment, so it must not be treated as
+  // a continuation of the keyword match.
+  assert.equal(ruleIds("a.js", "const ApiKeyboardShortcut = 'cmd+k';").length, 0);
+  // Only one trailing camelCase segment is tolerated (the "Value" in
+  // clientSecretValue) - a longer unrelated compound tail must not let the
+  // match run all the way to a distant, unrelated "=".
+  assert.equal(ruleIds("a.js", "apiSecretKeyRotationInterval = 86400;").length, 0);
+  // Snake_case identifiers where the keyword is not the last segment before
+  // "=" must keep behaving exactly as before this fix (no new match, since
+  // this shape was never part of the reported bug and camelCase-only
+  // continuation deliberately does not extend to underscore segments).
+  assert.equal(ruleIds("a.js", "password_reset_enabled = true;").length, 0);
+});
+
 test("does not flag credential keys wired to env vars / references (well-written config)", () => {
   // The critical real-world case: Sequelize/config files that read secrets from
   // the environment must NOT be blocked.

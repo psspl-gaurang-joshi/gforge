@@ -107,7 +107,68 @@ export const PROVIDER_RULES = [
 // purpose and train developers to bypass the hook.
 export const GENERIC_SECRET_RULE_ID = "generic-secret-assignment";
 const GENERIC_SECRET_DESCRIPTION = "hardcoded value assigned to a credential keyword";
-const GENERIC_KEYWORD_RE = /(?:^|[^A-Za-z0-9])(?:passwd|password|passphrase|pwd|pass|secret(?:[_-]?key)?|token|access[_-]?token|auth(?:[_-]?token)?|authorization|bearer|api[_-]?key|apikey|access[_-]?key|client[_-]?secret|private[_-]?key|encryption[_-]?key|signing[_-]?key|session[_-]?key|connection[_-]?string|conn[_-]?str|credentials?)["'`]?\s*[:=]\s*(\S.*)$/i;
+// The keyword itself, with no boundary and no trailing context — matched
+// case-insensitively, globally, so every occurrence in a line can be tried.
+// Boundary and trailing-segment checks are done separately in plain JS
+// below (see matchGenericKeyword), NOT as part of this pattern: character
+// classes inside lookarounds are also flattened by the /i flag, so a
+// lookaround here could never actually tell upper- from lowercase to detect
+// a camelCase transition (verified directly against V8 before writing this).
+// Order matters: unlike the original single-pattern regex (where a failed
+// tail check let the engine backtrack into a later, longer alternative at
+// the same position for free), matchGenericKeyword below commits to
+// whichever alternative matches first and does not retry other alternatives
+// at that same position. So wherever one alternative is a prefix of another
+// (authorization vs. auth), the longer/more specific one must be listed
+// first, or "Authorization: Bearer ..." would match only "auth" and then
+// fail its own tail check instead of matching "authorization" and succeeding.
+const GENERIC_KEYWORD_CORE_RE = /(?:passwd|password|passphrase|pwd|pass|secret(?:[_-]?key)?|token|access[_-]?token|authorization|auth(?:[_-]?token)?|bearer|api[_-]?key|apikey|access[_-]?key|client[_-]?secret|private[_-]?key|encryption[_-]?key|signing[_-]?key|session[_-]?key|connection[_-]?string|conn[_-]?str|credentials?)/gi;
+
+// At most one trailing camelCase segment right after the keyword (the
+// "Value" in clientSecretValue) — deliberately not unbounded, so the match
+// cannot run through an unrelated compound tail (apiSecretKeyRotationInterval)
+// to reach a distant, unrelated "=".
+const TRAILING_CAMEL_SEGMENT_RE = /^[A-Z][a-z0-9]*/;
+// What must follow the keyword (and its optional trailing segment) for this
+// to be an assignment at all, same shape the original regex required.
+const KEYWORD_TAIL_RE = /^["'`]?\s*[:=]\s*(\S.*)$/;
+
+function isAsciiUpper(ch) {
+  return ch !== undefined && ch >= "A" && ch <= "Z";
+}
+function isAsciiLowerOrDigit(ch) {
+  return ch !== undefined && ((ch >= "a" && ch <= "z") || (ch >= "0" && ch <= "9"));
+}
+
+// Finds a credential-keyword assignment anywhere in `line`, tolerating a
+// camelCase compound identifier (apiSecretKey, clientSecretValue) in
+// addition to the original start-of-line/non-alphanumeric-boundary forms
+// (snake_case, ALL_CAPS, plain) — issue #27. Returns the captured value, or
+// null. Loops past a candidate whose boundary or tail doesn't hold, rather
+// than giving up after the first (leftmost) keyword-shaped substring.
+function matchGenericKeyword(line) {
+  GENERIC_KEYWORD_CORE_RE.lastIndex = 0;
+  let found;
+  while ((found = GENERIC_KEYWORD_CORE_RE.exec(line))) {
+    const start = found.index;
+    const end = start + found[0].length;
+
+    const before = line[start - 1];
+    const boundaryOk =
+      start === 0 ||
+      !/[A-Za-z0-9]/.test(before) ||
+      (isAsciiLowerOrDigit(before) && isAsciiUpper(line[start]));
+    if (!boundaryOk) continue;
+
+    const rest = line.slice(end);
+    const segment = rest.match(TRAILING_CAMEL_SEGMENT_RE);
+    const afterKeyword = segment ? rest.slice(segment[0].length) : rest;
+
+    const tail = afterKeyword.match(KEYWORD_TAIL_RE);
+    if (tail) return tail[1];
+  }
+  return null;
+}
 // Placeholder shapes shared by the generic rule and the .env cross-reference.
 // These two lists had drifted: the dotenv layer knew `your_db_password` was a
 // placeholder while the generic rule did not, so every `KEY=your_*` line in a
@@ -507,11 +568,11 @@ export function scanText(filePath, content, options = {}) {
     }
 
     if (includeGeneric) {
-      const match = line.match(GENERIC_KEYWORD_RE);
+      const value = matchGenericKeyword(line);
       // Everything left of the value: the capture runs to end of line, so the
       // remainder names the key the value was assigned to.
-      const keyContext = match ? line.slice(0, line.length - match[1].length) : "";
-      if (match && looksLikeHardcodedSecret(match[1], { codeFile, keyContext })) {
+      const keyContext = value !== null ? line.slice(0, line.length - value.length) : "";
+      if (value !== null && looksLikeHardcodedSecret(value, { codeFile, keyContext })) {
         findings.push({
           file: filePath,
           line: lineNumber,
