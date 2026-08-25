@@ -22,6 +22,41 @@ import {
   resolveStatePath
 } from "./hooks.js";
 
+// core.hooksPath was added in git 2.9. An older git accepts and stores the
+// config key unconditionally (git happily persists config keys it doesn't act
+// on) but never consults it when running hooks - install/verify would both
+// report success while the scanner silently never runs on any commit.
+const MIN_GIT_VERSION_FOR_HOOKS_PATH = [2, 9, 0];
+
+// Tolerates platform-specific suffixes on `git --version` output (e.g.
+// "2.39.2 (Apple Git-143)" on macOS, "2.34.1.windows.1" on Windows) by only
+// reading the leading numeric run.
+function parseGitVersionParts(version) {
+  const match = String(version ?? "").match(/^(\d+)\.(\d+)(?:\.(\d+))?/);
+  if (!match) return null;
+  return [Number(match[1]), Number(match[2]), Number(match[3] ?? 0)];
+}
+
+// Unparseable versions fail closed (treated as not meeting the minimum)
+// rather than silently assuming support.
+function meetsMinimumGitVersion(version, minimum) {
+  const parts = parseGitVersionParts(version);
+  if (!parts) return false;
+  for (let i = 0; i < minimum.length; i += 1) {
+    const actual = parts[i] ?? 0;
+    const required = minimum[i];
+    if (actual !== required) return actual > required;
+  }
+  return true;
+}
+
+function describeGitTooOld(version) {
+  return (
+    `Git ${version} does not support core.hooksPath (added in git 2.9) - ` +
+    "hooks would silently never run even though config reports success. Upgrade git."
+  );
+}
+
 export async function installManagedHooks(options = {}) {
   const environment = options.environment ?? (await detectEnvironment(options));
   const execFileFn = options.execFile;
@@ -166,6 +201,17 @@ export async function verifyManagedHooks(options = {}) {
   const hooksDirectory = resolveHooksDirectory(environment.home.path);
   const configuredHooksPath = await safeGetGlobalHooksPath(execFileFn);
 
+  if (environment.git.available && !meetsMinimumGitVersion(environment.git.version, MIN_GIT_VERSION_FOR_HOOKS_PATH)) {
+    // Surfaced even when hooks-path below reports PASS: git accepts and
+    // stores core.hooksPath unconditionally on older versions, but never
+    // consults it, so a passing config check alone does not mean hooks run.
+    checks.push({
+      status: "FAIL",
+      label: "git-version",
+      detail: describeGitTooOld(environment.git.version)
+    });
+  }
+
   checks.push({
     status: configuredHooksPath === hooksDirectory ? "PASS" : "FAIL",
     label: "hooks-path",
@@ -262,6 +308,8 @@ function validateInstallPreflight(environment) {
 
   if (!environment.git.available) {
     messages.push("Git is required but was not found.");
+  } else if (!meetsMinimumGitVersion(environment.git.version, MIN_GIT_VERSION_FOR_HOOKS_PATH)) {
+    messages.push(describeGitTooOld(environment.git.version));
   }
 
   return messages;

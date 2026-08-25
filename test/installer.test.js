@@ -385,6 +385,62 @@ test("uninstall still removes files when the global gitconfig cannot be read", a
   await assert.rejects(stat(resolveStatePath(homePath)), { code: "ENOENT" });
 });
 
+test("refuses to install on a git older than 2.9 (no core.hooksPath support)", async () => {
+  const homePath = await createTempHome();
+  const git = createGitConfigMock();
+  const environment = { ...createEnvironment(homePath), git: { available: true, version: "2.8.4", rawVersion: "git version 2.8.4" } };
+
+  const result = await installManagedHooks({ environment, execFile: git.execFile });
+
+  assert.equal(result.ok, false);
+  assert.match(result.messages.join("\n"), /does not support core\.hooksPath/);
+  // Must fail closed: nothing should have been configured against this git.
+  assert.equal(git.hooksPath(), null);
+});
+
+test("installs fine on exactly the minimum supported git version (2.9.0)", async () => {
+  const homePath = await createTempHome();
+  const git = createGitConfigMock();
+  const environment = { ...createEnvironment(homePath), git: { available: true, version: "2.9.0", rawVersion: "git version 2.9.0" } };
+
+  const result = await installManagedHooks({ environment, execFile: git.execFile });
+
+  assert.equal(result.ok, true);
+});
+
+test("tolerates platform-specific suffixes on the git version string (e.g. Apple Git builds)", async () => {
+  const homePath = await createTempHome();
+  const git = createGitConfigMock();
+  const environment = {
+    ...createEnvironment(homePath),
+    git: { available: true, version: "2.39.2 (Apple Git-143)", rawVersion: "git version 2.39.2 (Apple Git-143)" }
+  };
+
+  const result = await installManagedHooks({ environment, execFile: git.execFile });
+
+  assert.equal(result.ok, true);
+});
+
+test("verify fails the git-version check on an old git even if hooksPath happens to be configured", async () => {
+  const homePath = await createTempHome();
+  const hooksDirectory = resolveHooksDirectory(homePath);
+  // Simulates the exact silent-failure scenario from the bug report: an old
+  // git that accepted and stored core.hooksPath without ever consulting it.
+  const git = createGitConfigMock(hooksDirectory);
+  const environment = { ...createEnvironment(homePath), git: { available: true, version: "2.7.0", rawVersion: "git version 2.7.0" } };
+
+  const report = await verifyManagedHooks({ environment, execFile: git.execFile });
+
+  const versionCheck = report.checks.find((check) => check.label === "git-version");
+  assert.ok(versionCheck, "expected a git-version check");
+  assert.equal(versionCheck.status, "FAIL");
+  assert.match(versionCheck.detail, /does not support core\.hooksPath/);
+  // The hooks-path check itself can still legitimately show PASS - that's
+  // exactly the trap: config matches, but the hook never runs.
+  const hooksPathCheck = report.checks.find((check) => check.label === "hooks-path");
+  assert.equal(hooksPathCheck.status, "PASS");
+});
+
 async function createTempHome() {
   return mkdtemp(join(tmpdir(), "gforge-test-"));
 }
