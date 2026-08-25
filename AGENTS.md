@@ -22,6 +22,8 @@ Do not expand it into:
 
 ## Working Rules
 
+- Commit as the repository owner's configured git user only. Never add an AI
+  tool (e.g. Claude) as a co-author or include a `Co-Authored-By` trailer.
 - Keep docs and code token-friendly.
 - Prefer updating the existing root docs over adding new docs.
 - Do not invent commands, APIs, or scope.
