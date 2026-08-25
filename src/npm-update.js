@@ -92,7 +92,20 @@ export async function performSelfUpgrade(command, version, options = {}) {
   }
   const run = options.spawnSync ?? spawnSync;
 
-  const install = run("npm", ["install", "-g", `${PACKAGE_NAME}@latest`], { stdio: "inherit", shell: NPM_VIA_SHELL });
+  // Unlike the two metadata calls above (bounded at 8s), an actual package
+  // install is expected to take longer, so it gets its own, longer bound
+  // rather than sharing timeoutMs. Either way, a hung or extremely slow
+  // registry/proxy/filesystem must not block `gforge install`/`update`
+  // indefinitely.
+  const installTimeoutMs = options.installTimeoutMs ?? 60000;
+  const install = run("npm", ["install", "-g", `${PACKAGE_NAME}@latest`], {
+    stdio: "inherit",
+    shell: NPM_VIA_SHELL,
+    timeout: installTimeoutMs
+  });
+  if (install?.error?.code === "ETIMEDOUT") {
+    return { ok: false, error: `npm install -g ${PACKAGE_NAME}@latest timed out after ${installTimeoutMs}ms` };
+  }
   if (!install || install.status !== 0) {
     return { ok: false, error: `npm install -g ${PACKAGE_NAME}@latest exited with status ${install ? install.status : "unknown"}` };
   }

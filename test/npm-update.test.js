@@ -35,6 +35,24 @@ test("performSelfUpgrade installs the constant gforge@latest, never an interpola
   assert.equal(JSON.stringify(calls).includes("9.9.9"), false);
 });
 
+test("performSelfUpgrade passes a bounded timeout to the install step and fails clearly if it fires", async () => {
+  const calls = [];
+  const result = await performSelfUpgrade("update", "9.9.9", {
+    spawnSync: (cmd, args, spawnOptions) => {
+      calls.push({ cmd, args, spawnOptions });
+      // Simulate spawnSync's own behavior when its timeout elapses: the
+      // process is killed, status is null, and `error.code` is ETIMEDOUT.
+      return { status: null, signal: "SIGTERM", error: Object.assign(new Error("timed out"), { code: "ETIMEDOUT" }) };
+    }
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.error, /timed out after \d+ms/);
+  const install = calls.find((c) => c.args && c.args[0] === "install");
+  assert.equal(typeof install.spawnOptions.timeout, "number");
+  assert.ok(install.spawnOptions.timeout > 0);
+});
+
 test("performSelfUpgrade refuses a version that is not plain semver (no command injection)", async () => {
   let spawned = false;
   const result = await performSelfUpgrade("update", "1.0.0 && rm -rf /", {
