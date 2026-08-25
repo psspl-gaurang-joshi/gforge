@@ -176,13 +176,34 @@ function looksLikeRouteTemplate(value) {
 // secret cannot appear inside the identifier that names it, whereas the reverse
 // would suppress a real one (AUTH = "s3cr3tAuthValue123") (issue #23).
 const KEY_IDENTIFIER_RE = /([A-Za-z_][\w.$-]*)\s*["'`]?\s*[:=]\s*$/;
+
+// A genuine self-referential label restates its own name as a plain,
+// human-readable word or slug (SESSION_KEY = "session-key"). That must not be
+// confused with a real secret that merely happens to be substring-contained
+// in a longer identifier which *also* carries the very credential keyword
+// that triggered this rule in the first place — db_password_hunter2Real9 =
+// "hunter2!Real9" is not a label restating its name, it is the same secret
+// one rename away from invisibility, for a secret of any length (issue #37).
+// A hand-written label never carries digits or symbol characters; a real
+// generated secret almost always does — so the substring match alone is not
+// enough, the value itself must still look like a plain word/slug.
+const SELF_LABEL_RE = /^[A-Za-z][A-Za-z_-]*$/;
+const SELF_LABEL_MIN_VOWEL_RATIO = 0.3;
+function looksLikeSelfDescriptiveLabel(value) {
+  if (!SELF_LABEL_RE.test(value)) return false;
+  const letters = value.replace(/[^A-Za-z]/g, "");
+  if (letters.length < 4) return false;
+  return ratioOf(letters, /[aeiou]/gi) >= SELF_LABEL_MIN_VOWEL_RATIO;
+}
+
 function echoesItsKey(value, keyContext) {
   if (!keyContext) return false;
   const key = keyContext.match(KEY_IDENTIFIER_RE);
   if (!key) return false;
   const flatten = (text) => text.toLowerCase().replace(/[^a-z0-9]/g, "");
   const flatValue = flatten(value);
-  return flatValue.length >= 4 && flatten(key[1]).includes(flatValue);
+  if (flatValue.length < 4 || !flatten(key[1]).includes(flatValue)) return false;
+  return looksLikeSelfDescriptiveLabel(value);
 }
 
 // Decide whether the value assigned to a credential keyword is a hardcoded
