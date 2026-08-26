@@ -30,7 +30,8 @@ so the standard is enforced by default, not by discipline.
   so the firewall applies to every repository on the machine.
 - **Deep, layered detection**
   - **`.env` cross-reference** — blocks any staged file that hardcodes a real value
-    from your git-ignored `.env` files (the classic "pasted a token out of `.env`").
+    from your git-ignored `.env` files (the classic "pasted a token out of `.env`"),
+    including per-package `.env` files in a monorepo, not just the repo root.
   - **Provider rules** — 25+ credential shapes: AWS, GitHub/GitLab, Google, Slack,
     Stripe, Twilio, SendGrid, npm, PyPI, OpenAI/Anthropic, PEM private keys, JWTs,
     database URLs, and more.
@@ -90,7 +91,7 @@ gforge <command> [--force]
 | Command | Description |
 | --- | --- |
 | `gforge install` | Upgrade to the latest version (if any) and install the global hooks. |
-| `gforge verify` | Read-only health check of the environment and installed hooks. |
+| `gforge verify` | Read-only health check of the environment, the installed hooks, and (inside a repo) the `.env` files the cross-reference can see. |
 | `gforge update` | Upgrade to the latest version (if any) and refresh the hooks. |
 | `gforge uninstall` | Remove GForge-owned hooks and restore your previous Git config. |
 | `gforge version` | Print the installed version. |
@@ -108,6 +109,10 @@ value**. Detection runs several layers in order:
 
 1. **`.env` cross-reference** — the highest-precision signal: values read (in
    memory only) from your git-ignored `.env` files, matched verbatim in staged code.
+   Every `.env` in the repository is used, not only the root one, so a monorepo's
+   `server/.env` and `client/.env` are covered. Template files are skipped, and
+   the search prunes vendored and build directories (`node_modules`, `dist`, …).
+   `gforge verify` prints which `.env` files this layer found.
 2. **Provider rules** — fixed credential shapes for the major cloud and SaaS providers.
 3. **Generic secrets** — credential keywords assigned to a hardcoded value; smart
    enough to ignore `process.env.*`, function calls, `${VAR}` interpolation, and

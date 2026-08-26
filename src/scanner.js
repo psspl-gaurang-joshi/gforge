@@ -58,9 +58,9 @@ export function isHeuristicExemptPath(filePath, env = process.env) {
 // rule identifiers.
 
 import { execFileSync, spawn } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, join, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 // Baked at install time (see getScannerContent in hooks.js). Left as a literal
@@ -673,13 +673,18 @@ function stagedContent(filePath) {
   }
 }
 
-function loadAllowlist() {
-  let root;
+// The working-tree root, or null when not inside a git repository.
+function repoRoot() {
   try {
-    root = git(["rev-parse", "--show-toplevel"]).toString("utf8").trim();
+    return git(["rev-parse", "--show-toplevel"]).toString("utf8").trim() || null;
   } catch {
-    return [];
+    return null;
   }
+}
+
+function loadAllowlist() {
+  const root = repoRoot();
+  if (!root) return [];
   const patterns = [];
   for (const file of [".gforgeignore", ".gitleaksignore"]) {
     const content = stagedOrWorkingFile(root, file);
@@ -704,11 +709,25 @@ function stagedOrWorkingFile(root, relPath) {
 // VALUES from the repo's (git-ignored) .env files, then flag any staged file
 // that hardcodes one of those values verbatim — the classic "copied the token
 // out of .env into the code" leak. Values are never printed.
+//
+// Env files live next to the package that owns them. A monorepo keeps them in
+// subdirectories (server/.env, client/.env, ...) and frequently has no root
+// .env at all, so reading a fixed list of filenames in the repo root loaded
+// zero secrets and silently disabled this whole layer (issue #26). The repo is
+// walked instead, bounded by depth, directory budget and the generated/vendor
+// skip list so a large tree cannot slow a commit down.
 // ---------------------------------------------------------------------------
-const DOTENV_FILES = [
-  ".env", ".env.local", ".env.development", ".env.production",
-  ".env.staging", ".env.test", ".env.development.local", ".env.production.local"
-];
+const DOTENV_MAX_DEPTH = 5;
+// Reached only by a repo with thousands of non-vendored directories; a tree
+// that large costs a few hundred ms to walk, and a normal one a few tens.
+const DOTENV_MAX_DIRECTORIES = 4000;
+const DOTENV_MAX_BYTES = 1024 * 1024;
+// Build output, vendored dependencies and virtualenvs hold other projects'
+// env files, not this repo's — and are where the file count explodes.
+const DOTENV_SKIP_DIRECTORIES = new Set([
+  ...GENERATED_DIRECTORIES, ".git", ".hg", ".svn", ".venv", "venv", "virtualenv",
+  ".tox", ".gradle", ".terraform", ".cache", ".yarn", ".pnpm-store", "pods"
+]);
 const DOTENV_KEY_IS_SECRET = /(pass|pwd|secret|token|key|auth|cred|api|private|access|signature|salt)/i;
 // Shares PLACEHOLDER_ALTERNATIVES with the generic rule (see issue #25); the
 // extras here are environment-ish values that are real but not secret.
@@ -726,18 +745,72 @@ function looksLikeDotenvSecret(key, value) {
   return value.length >= 12 && /[A-Za-z]/.test(value) && /[0-9]/.test(value);
 }
 
-function loadDotenvSecrets() {
-  let root;
-  try {
-    root = git(["rev-parse", "--show-toplevel"]).toString("utf8").trim();
-  } catch {
-    return [];
+// A real env file: `.env`, or `.env.<anything>` that is not a placeholder
+// template. Templates are tracked and hold fake values, so cross-referencing
+// them would block commits on the very placeholders issue #25 taught us to
+// ignore.
+export function isDotenvFile(filePath) {
+  const name = basename(filePath).toLowerCase();
+  if (name === ".env") return true;
+  return name.startsWith(".env.") && !isEnvTemplate(name);
+}
+
+// Every env file in the repo. Breadth-first on purpose: env files sit at
+// package roots, so if a pathological tree exhausts the directory budget it is
+// the deepest directories that go unread, never a sibling package's .env.
+export function collectDotenvFiles(root) {
+  const found = [];
+  let queue = [root];
+  let depth = 0;
+  let budget = DOTENV_MAX_DIRECTORIES;
+
+  while (queue.length > 0 && budget > 0) {
+    const next = [];
+
+    for (const directory of queue) {
+      if (budget <= 0) break;
+      budget -= 1;
+
+      let entries;
+      try {
+        entries = readdirSync(directory, { withFileTypes: true });
+      } catch {
+        continue; // unreadable directory (permissions, race); nothing to load here.
+      }
+
+      for (const entry of entries) {
+        // Symlinks report as neither file nor directory here, which also keeps
+        // the walk free of symlink loops.
+        if (entry.isDirectory()) {
+          if (depth >= DOTENV_MAX_DEPTH) continue;
+          if (DOTENV_SKIP_DIRECTORIES.has(entry.name.toLowerCase())) continue;
+          next.push(join(directory, entry.name));
+        } else if (entry.isFile() && isDotenvFile(entry.name)) {
+          found.push(join(directory, entry.name));
+        }
+      }
+    }
+
+    queue = next;
+    depth += 1;
   }
+
+  return found;
+}
+
+export function loadDotenvSecrets(root = repoRoot()) {
+  return root ? dotenvSecretsFrom(collectDotenvFiles(root)) : [];
+}
+
+function dotenvSecretsFrom(files) {
   const secrets = new Set();
-  for (const file of DOTENV_FILES) {
+  for (const file of files) {
     let text;
     try {
-      text = decodeBlob(readFileSync(`${root}/${file}`));
+      // An env file is a handful of lines; anything larger is not one, and
+      // reading it would stall the commit.
+      if (statSync(file).size > DOTENV_MAX_BYTES) continue;
+      text = decodeBlob(readFileSync(file));
     } catch {
       continue;
     }
@@ -755,6 +828,21 @@ function loadDotenvSecrets() {
     }
   }
   return [...secrets];
+}
+
+// What the cross-reference can actually see, for `gforge verify`. A layer that
+// silently loads nothing is indistinguishable from one that is working, which
+// is how the monorepo gap went unnoticed (issue #26). Reports file paths and
+// counts only — never a value.
+export function describeDotenvSources(root = repoRoot()) {
+  if (!root) return { inRepo: false, root: null, files: [], secretCount: 0 };
+  const files = collectDotenvFiles(root);
+  return {
+    inRepo: true,
+    root,
+    files: files.map((file) => relative(root, file).replace(/\\/g, "/")).sort(),
+    secretCount: dotenvSecretsFrom(files).length
+  };
 }
 
 function lineOfSubstring(content, needle) {

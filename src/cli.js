@@ -13,6 +13,7 @@ import {
   performSelfUpgrade,
   readCachedUpdateNotice
 } from "./npm-update.js";
+import { describeDotenvSources } from "./scanner.js";
 import { createVerificationReport, formatVerificationReport } from "./verify.js";
 
 export async function runCli(args, streams, options = {}) {
@@ -42,7 +43,8 @@ export async function runCli(args, streams, options = {}) {
       ...options,
       environment
     });
-    const report = createVerificationReport(environment, managedHooksReport);
+    const dotenvReport = (options.describeDotenvSources ?? describeDotenvSources)();
+    const report = createVerificationReport(environment, managedHooksReport, dotenvReport);
 
     streams.stdout.write(formatVerificationReport(report));
     const notice = (options.readCachedUpdateNotice ?? readCachedUpdateNotice)(VERSION);
