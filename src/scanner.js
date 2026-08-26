@@ -736,11 +736,25 @@ const DOTENV_VALUE_STOPLIST = new RegExp(
   "i"
 );
 
+// A weak/common dev-default value ("password") sitting behind a
+// credential-shaped key name used to be trusted unconditionally — but it
+// gets cross-referenced against every staged file as an exact string, so a
+// short, common word is exactly the value most likely to also appear,
+// completely unrelated, as plain text elsewhere (a `type="password"` HTML
+// attribute) (issue #43). Real generated secrets/tokens run far longer than
+// this in practice, so require some real length even once the key matches.
+const DOTENV_MIN_KEYED_VALUE_LENGTH = 10;
+// A CSS-shaped hex color (#fff, #a1b2c3, #a1b2c3d4) — a very common `.env`
+// theme/branding value, and its short, fixed-alphabet shape is exactly what
+// makes it likely to coincidentally match unrelated code (issue #43).
+const DOTENV_HEX_COLOR_RE = /^#?[0-9a-fA-F]{3,4}$|^#?[0-9a-fA-F]{6}$|^#?[0-9a-fA-F]{8}$/;
+
 function looksLikeDotenvSecret(key, value) {
   if (value.length < 6) return false;
   if (DOTENV_VALUE_STOPLIST.test(value)) return false;
   if (/^\d+$/.test(value)) return false; // ports, ids
-  if (DOTENV_KEY_IS_SECRET.test(key)) return true;
+  if (DOTENV_HEX_COLOR_RE.test(value)) return false;
+  if (DOTENV_KEY_IS_SECRET.test(key)) return value.length >= DOTENV_MIN_KEYED_VALUE_LENGTH;
   // Otherwise only treat long, random-looking values as secrets.
   return value.length >= 12 && /[A-Za-z]/.test(value) && /[0-9]/.test(value);
 }
@@ -845,10 +859,27 @@ export function describeDotenvSources(root = repoRoot()) {
   };
 }
 
-function lineOfSubstring(content, needle) {
-  const index = content.indexOf(needle);
-  if (index === -1) return 0;
-  return content.slice(0, index).split(/\r?\n/).length;
+// Finds the first occurrence of `needle` that isn't embedded inside a larger
+// run of identifier characters on either side — a short secret value must
+// not match as a coincidental fragment of an unrelated, longer word/token
+// (issue #43: e.g. a secret "pass" must not match inside "passenger"). A
+// needle whose own edge isn't itself an identifier character (starts or ends
+// with a symbol) has no boundary to violate on that side, so any occurrence
+// there already counts, same as a plain substring match would.
+function isIdentifierChar(ch) {
+  return ch !== undefined && /[A-Za-z0-9_]/.test(ch);
+}
+function findWordBoundaryIndex(content, needle) {
+  const needleStartsWord = isIdentifierChar(needle[0]);
+  const needleEndsWord = isIdentifierChar(needle[needle.length - 1]);
+  let index = content.indexOf(needle);
+  while (index !== -1) {
+    const leftOk = !needleStartsWord || !isIdentifierChar(content[index - 1]);
+    const rightOk = !needleEndsWord || !isIdentifierChar(content[index + needle.length]);
+    if (leftOk && rightOk) return index;
+    index = content.indexOf(needle, index + 1);
+  }
+  return -1;
 }
 
 // Optional turbo layer: if the gitleaks binary is installed, run it over the
@@ -892,10 +923,11 @@ export function scanStaged(options = {}) {
 
     // Highest-precision check: a real secret value from .env hardcoded here.
     for (const secret of dotenvSecrets) {
-      if (content.includes(secret)) {
+      const index = findWordBoundaryIndex(content, secret);
+      if (index !== -1) {
         findings.push({
           file,
-          line: lineOfSubstring(content, secret),
+          line: content.slice(0, index).split(/\r?\n/).length,
           ruleId: "hardcoded-dotenv-secret",
           description: "a secret value from a .env file is hardcoded here"
         });

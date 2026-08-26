@@ -495,6 +495,78 @@ test("cross-references staged code against .env secret values", () => {
   assert.equal(clean.findings.length, 0);
 });
 
+test("issue #43: a weak/common word behind a credential-shaped key is not extracted as a secret", () => {
+  // Real-world false positive: a dev-default value like "password" is
+  // exactly the kind of text that also shows up, completely unrelated, in
+  // ordinary code (an HTML type="password" attribute). The extracted list
+  // (not a hand-picked dotenvSecrets array, which would bypass extraction
+  // filtering entirely) is what a real commit is actually checked against.
+  const root = makeTree({ ".env": "DEFAULT_PASSWORD=password\n" });
+  const secrets = loadDotenvSecrets(root);
+  assert.equal(secrets.includes("password"), false);
+
+  const leak = scanStaged({
+    ...opts, allowlist: [], dotenvSecrets: secrets,
+    files: ["LoginForm.tsx"], read: () => '<input type="password" autoComplete="current-password" />'
+  });
+  assert.equal(leak.findings.length, 0);
+});
+
+test("issue #43: a CSS-shaped hex color is not extracted as a secret", () => {
+  // Another real-world false positive: a theme/branding color value in .env,
+  // coincidentally matching an unrelated color literal elsewhere.
+  for (const envContent of ["THEME_ACCENT_KEY=3a86ff\n", "BRAND_API_KEY=#fff\n", "SECRET_COLOR_TOKEN=a1b2c3d4\n"]) {
+    const root = makeTree({ ".env": envContent });
+    assert.deepEqual(loadDotenvSecrets(root), [], envContent);
+  }
+
+  const root = makeTree({ ".env": "THEME_ACCENT_KEY=3a86ff\n" });
+  const secrets = loadDotenvSecrets(root);
+  const leak = scanStaged({
+    ...opts, allowlist: [], dotenvSecrets: secrets,
+    files: ["theme.tsx"], read: () => "export const PRIMARY = '#3a86ff';"
+  });
+  assert.equal(leak.findings.length, 0);
+});
+
+test("issue #43: a genuinely strong secret behind a credential-shaped key is still caught", () => {
+  const root = makeTree({ ".env": "REAL_API_TOKEN=aX9kQm2pLw8vRt4zNcQ7\n" });
+  const secrets = loadDotenvSecrets(root);
+  assert.ok(secrets.includes("aX9kQm2pLw8vRt4zNcQ7"));
+
+  const leak = scanStaged({
+    ...opts, allowlist: [], dotenvSecrets: secrets,
+    files: ["leak.js"], read: () => 'const t = "aX9kQm2pLw8vRt4zNcQ7";'
+  });
+  assert.ok(leak.findings.some((f) => f.ruleId === "hardcoded-dotenv-secret"));
+});
+
+test("issue #43: the cross-reference respects word boundaries, not a raw substring match", () => {
+  const secret = "longenoughsecret1";
+
+  // Embedded as a fragment inside a longer, unrelated identifier: not a match.
+  const embedded = scanStaged({
+    ...opts, allowlist: [], dotenvSecrets: [secret],
+    files: ["a.js"], read: () => 'const x = "prefixlongenoughsecret1suffix";'
+  });
+  assert.equal(embedded.findings.length, 0);
+
+  // The same value as a standalone token is still caught.
+  const standalone = scanStaged({
+    ...opts, allowlist: [], dotenvSecrets: [secret],
+    files: ["a.js"], read: () => `const x = "${secret}";`
+  });
+  assert.ok(standalone.findings.some((f) => f.ruleId === "hardcoded-dotenv-secret"));
+
+  // A value bordered by non-identifier punctuation (not itself embedded in a
+  // larger word) still matches, same as a plain substring check would.
+  const punctuated = scanStaged({
+    ...opts, allowlist: [], dotenvSecrets: [secret],
+    files: ["a.js"], read: () => `Authorization: Bearer ${secret}!`
+  });
+  assert.ok(punctuated.findings.some((f) => f.ruleId === "hardcoded-dotenv-secret"));
+});
+
 test("cross-references .env files in package subdirectories, not just the repo root", () => {
   // The monorepo layout from issue #26: no root .env at all, one per package.
   const root = makeTree({
