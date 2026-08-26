@@ -665,11 +665,23 @@ export function decodeBlob(buf) {
   return buf.toString("latin1");
 }
 
+// `git show :path` exits with a normal (non-zero) process status for the two
+// genuinely expected failures — the path is not staged, or it is a
+// submodule/gitlink entry — so `error.status` is a real exit code in both
+// cases (verified empirically: 128 for each). Anything else — the process
+// killed by a signal (maxBuffer exceeded leaves `status: null`), a spawn
+// failure (missing binary, permissions) — is a real read failure, not
+// "nothing to scan here", and must not be treated the same way (issue #44).
+export function isExpectedGitReadFailure(error) {
+  return typeof error?.status === "number";
+}
+
 function stagedContent(filePath) {
   try {
     return decodeBlob(git(["show", `:${filePath}`]));
-  } catch {
-    return null; // submodule/gitlink or unreadable; nothing to scan.
+  } catch (error) {
+    if (isExpectedGitReadFailure(error)) return null; // submodule/gitlink or not staged.
+    throw error; // genuine read failure: fail closed rather than scan nothing.
   }
 }
 
