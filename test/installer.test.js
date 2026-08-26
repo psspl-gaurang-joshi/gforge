@@ -220,6 +220,41 @@ test("uninstall does not overwrite unrelated hooks path", async () => {
   assert.match(result.messages.join("\n"), /Skipped core\.hooksPath restore/);
 });
 
+test("issue #40: uninstall aborts without deleting anything when reading core.hooksPath fails transiently", async () => {
+  const homePath = await createTempHome();
+  const git = createGitConfigMock();
+  const hooksDirectory = resolveHooksDirectory(homePath);
+
+  await installManagedHooks({
+    environment: createEnvironment(homePath),
+    execFile: git.execFile
+  });
+
+  // The real gitconfig still has core.hooksPath = the managed directory -
+  // only this one read of it fails, transiently (e.g. a momentary lock/IO
+  // error), which must not be mistaken for "not configured".
+  const flakyExecFile = async (command, args) => {
+    if (args.join(" ") === "config --global --get core.hooksPath") {
+      const error = new Error("could not lock config file .gitconfig: File exists");
+      error.code = "EBUSY";
+      throw error;
+    }
+    return git.execFile(command, args);
+  };
+
+  const result = await uninstallManagedHooks({
+    environment: createEnvironment(homePath),
+    execFile: flakyExecFile
+  });
+
+  assert.equal(result.ok, false);
+  // Nothing was touched: the managed hook file is still on disk, the
+  // gitconfig value is untouched, and it still points at that same
+  // directory - so no commit-blocking hook silently goes dark machine-wide.
+  await assert.doesNotReject(stat(join(hooksDirectory, "pre-commit")));
+  assert.equal(git.hooksPath(), hooksDirectory);
+});
+
 test("uninstall leaves non-empty GForge directories in place", async () => {
   const homePath = await createTempHome();
   const git = createGitConfigMock();
@@ -353,7 +388,13 @@ test("verify warns when a repo-local hooks path shadows the managed hooks", asyn
   assert.match(warning.detail, /\.husky/);
 });
 
-test("uninstall still removes files when the global gitconfig cannot be read", async () => {
+test("issue #40: uninstall aborts, and removes nothing, when the global gitconfig cannot be read", async () => {
+  // Previously this uninstall would still remove the managed hook/state files
+  // and report success - treating an unreadable gitconfig exactly like "no
+  // hooksPath configured". If the real config value was still the managed
+  // directory, that left global core.hooksPath silently pointed at deleted
+  // files: every git hook on the machine, of any kind, goes dark with no
+  // warning. The read failure must abort instead of being flattened away.
   const homePath = await createTempHome();
   const git = createGitConfigMock();
 
@@ -380,9 +421,9 @@ test("uninstall still removes files when the global gitconfig cannot be read", a
     execFile
   });
 
-  assert.equal(result.ok, true);
-  await assert.rejects(stat(join(resolveHooksDirectory(homePath), "pre-commit")), { code: "ENOENT" });
-  await assert.rejects(stat(resolveStatePath(homePath)), { code: "ENOENT" });
+  assert.equal(result.ok, false);
+  await assert.doesNotReject(stat(join(resolveHooksDirectory(homePath), "pre-commit")));
+  await assert.doesNotReject(stat(resolveStatePath(homePath)));
 });
 
 test("refuses to install on a git older than 2.9 (no core.hooksPath support)", async () => {

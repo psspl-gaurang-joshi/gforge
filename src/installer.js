@@ -138,7 +138,29 @@ export async function uninstallManagedHooks(options = {}) {
   const hooksDirectory = resolveHooksDirectory(homePath);
   const statePath = resolveStatePath(homePath);
   const { state, corrupt } = await readStateFile(statePath);
-  const configuredHooksPath = await safeGetGlobalHooksPath(execFileFn);
+
+  // getGlobalHooksPath() already distinguishes "genuinely not configured"
+  // (returns null) from an unexpected read failure (throws) - do NOT flatten
+  // that back into null here the way the read-only verify path safely can.
+  // If the read fails for any transient reason while the real gitconfig
+  // value is still core.hooksPath=<managed dir>, treating it as "not
+  // configured" would skip the restore/unset below and then still delete the
+  // managed hook files - leaving global core.hooksPath silently pointed at a
+  // now-deleted directory, disabling every git hook on the machine (issue #40).
+  let configuredHooksPath;
+  try {
+    configuredHooksPath = await getGlobalHooksPath(execFileFn);
+  } catch (error) {
+    return {
+      ok: false,
+      command: "uninstall",
+      exitCode: 1,
+      hooksDirectory,
+      messages: [
+        `Could not read the current global core.hooksPath (${error?.message ?? error}); aborting without changing anything, to avoid leaving a stale hooksPath pointed at deleted files`
+      ]
+    };
+  }
   const messages = [];
 
   if (configuredHooksPath === hooksDirectory) {
