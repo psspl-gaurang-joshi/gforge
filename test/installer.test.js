@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -441,6 +441,65 @@ test("verify fails the git-version check on an old git even if hooksPath happens
   assert.equal(hooksPathCheck.status, "PASS");
 });
 
+test("issue #41: verify warns when a classic .git/hooks/pre-commit is dormant under GForge's global path", async () => {
+  const homePath = await createTempHome();
+  const repoGitDir = await createTempHome(); // reused as a stand-in "repo" .git directory
+  await mkdir(join(repoGitDir, "hooks"), { recursive: true });
+  const classicHook = join(repoGitDir, "hooks", "pre-commit");
+  await writeFile(classicHook, "#!/bin/sh\nexit 1\n");
+  await chmod(classicHook, 0o755);
+
+  const hooksDirectory = resolveHooksDirectory(homePath);
+  const git = createGitConfigMock(hooksDirectory, repoGitDir); // GForge already the active hooksPath
+
+  const report = await verifyManagedHooks({ environment: createEnvironment(homePath), execFile: git.execFile });
+
+  const shadowed = report.checks.find((check) => check.label === "classic-hook-shadowed");
+  assert.ok(shadowed, "expected a classic-hook-shadowed check");
+  assert.equal(shadowed.status, "WARN");
+  assert.match(shadowed.detail, /is executable but dormant/);
+  assert.match(shadowed.detail, new RegExp(classicHook.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+});
+
+test("issue #41: no warning when there is no classic hook file, it isn't executable, or GForge isn't the active hooksPath", async () => {
+  const homePath = await createTempHome();
+  const hooksDirectory = resolveHooksDirectory(homePath);
+
+  // No classic hook file at all.
+  const emptyRepoDir = await createTempHome();
+  await mkdir(join(emptyRepoDir, "hooks"), { recursive: true });
+  let git = createGitConfigMock(hooksDirectory, emptyRepoDir);
+  let report = await verifyManagedHooks({ environment: createEnvironment(homePath), execFile: git.execFile });
+  assert.equal(report.checks.some((check) => check.label === "classic-hook-shadowed"), false);
+
+  // Classic hook file present but not executable - git would never have run
+  // it either, so it isn't something GForge's install newly broke.
+  const nonExecRepoDir = await createTempHome();
+  await mkdir(join(nonExecRepoDir, "hooks"), { recursive: true });
+  await writeFile(join(nonExecRepoDir, "hooks", "pre-commit"), "#!/bin/sh\nexit 1\n");
+  git = createGitConfigMock(hooksDirectory, nonExecRepoDir);
+  report = await verifyManagedHooks({ environment: createEnvironment(homePath), execFile: git.execFile });
+  assert.equal(report.checks.some((check) => check.label === "classic-hook-shadowed"), false);
+
+  // A classic hook exists and GForge is installed, but something else (e.g.
+  // Husky) is the hooksPath actually in effect here - already surfaced via
+  // effective-hooks-path, so this check does not also fire. A dedicated mock
+  // (not the one above) so "config --get" and "rev-parse --git-dir" cannot
+  // accidentally resolve against the wrong scenario's directories.
+  const shadowedByOtherDir = await createTempHome();
+  await mkdir(join(shadowedByOtherDir, "hooks"), { recursive: true });
+  const otherClassicHook = join(shadowedByOtherDir, "hooks", "pre-commit");
+  await writeFile(otherClassicHook, "#!/bin/sh\nexit 1\n");
+  await chmod(otherClassicHook, 0o755);
+  const otherGit = createGitConfigMock(hooksDirectory, shadowedByOtherDir);
+  const execFile = async (command, args) => {
+    if (args.join(" ") === "config --get core.hooksPath") return { stdout: "/opt/husky/hooks\n" };
+    return otherGit.execFile(command, args);
+  };
+  report = await verifyManagedHooks({ environment: createEnvironment(homePath), execFile });
+  assert.equal(report.checks.some((check) => check.label === "classic-hook-shadowed"), false);
+});
+
 async function createTempHome() {
   return mkdtemp(join(tmpdir(), "gforge-test-"));
 }
@@ -454,7 +513,11 @@ function createEnvironment(homePath) {
   };
 }
 
-function createGitConfigMock(initialHooksPath = null) {
+// gitDir, when provided, simulates running inside a repository whose
+// `git rev-parse --git-dir` resolves to that path; the default (null)
+// simulates not being inside a git repository at all (rev-parse fails),
+// matching where every pre-existing test in this file already runs from.
+function createGitConfigMock(initialHooksPath = null, gitDir = null) {
   let hooksPath = initialHooksPath;
 
   return {
@@ -486,6 +549,15 @@ function createGitConfigMock(initialHooksPath = null) {
       if (args.join(" ") === "config --global --unset core.hooksPath") {
         hooksPath = null;
         return { stdout: "" };
+      }
+
+      if (args.join(" ") === "rev-parse --git-dir") {
+        if (!gitDir) {
+          const error = new Error("fatal: not a git repository (or any of the parent directories): .git");
+          error.code = 128;
+          throw error;
+        }
+        return { stdout: `${gitDir}\n` };
       }
 
       throw new Error(`Unexpected git args: ${args.join(" ")}`);
