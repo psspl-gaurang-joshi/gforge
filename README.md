@@ -188,9 +188,21 @@ file to manage.
 | `GFORGE_NODE=/path/to/node` | Pin the Node.js runtime the hook uses. |
 | `GFORGE_NO_DEFAULT_EXCLUDES=1` | Run the heuristic layers on every path, including translations, docs, and build output. |
 
-If a repository or the system already defines its own `core.hooksPath` (e.g. Husky
-or lefthook), GForge does not override it; run `gforge install` to have GForge take
-over. Automatic setup is skipped in CI (`CI` environment variable).
+If a repository, or the system itself, already defines its own `core.hooksPath`
+(e.g. Husky or lefthook, or an org policy pushed via `GIT_CONFIG_SYSTEM`), the
+automatic `npm install` setup does not override it — global config outranks
+system config in git's own precedence, so writing a global value would silently
+shadow a system-level one even without touching it directly, and the automatic
+setup checks for that too. Run `gforge install` to have GForge take over
+explicitly. Automatic setup is skipped in CI (`CI` environment variable).
+
+A **classic, hand-written** `.git/hooks/pre-commit` script (one that predates
+GForge and isn't itself managed by a tool like Husky) is a different case: git
+only ever consults one `core.hooksPath` location, so once GForge's global path
+is active, a script sitting directly in a repository's own `hooks/` directory
+goes dormant — there's no config value there for GForge to detect and preserve.
+`gforge verify` checks for this and reports a `classic-hook-shadowed` warning
+when it finds one, so it doesn't fail silently.
 
 ## Cross-platform support
 

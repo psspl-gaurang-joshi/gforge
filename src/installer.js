@@ -6,6 +6,7 @@ import { VERSION } from "./metadata.js";
 import {
   getEffectiveHooksPath,
   getGlobalHooksPath,
+  getRepoGitDir,
   setGlobalHooksPath,
   unsetGlobalHooksPath
 } from "./git-config.js";
@@ -227,6 +228,13 @@ export async function verifyManagedHooks(options = {}) {
       label: "effective-hooks-path",
       detail: `core.hooksPath resolves to ${effectiveHooksPath} here; a repository-local or system override shadows the managed hooks, so GForge will not run in this repository`
     });
+  } else if (effectiveHooksPath === hooksDirectory) {
+    // The mirror-image case: GForge IS what's actually active here, which
+    // means git no longer looks in this repository's own hooks/ directory
+    // at all - a classic hand-written script left there goes silently
+    // dormant, for every hook type, not just pre-commit (issue #41).
+    const classicHook = await checkClassicHookShadowed(execFileFn);
+    if (classicHook) checks.push(classicHook);
   }
 
   checks.push(await checkDirectory(hooksDirectory));
@@ -454,6 +462,33 @@ async function safeGetEffectiveHooksPath(execFileFn) {
   } catch {
     return null;
   }
+}
+
+// A classic hand-written .git/hooks/pre-commit script goes silently dormant
+// once GForge's global core.hooksPath is what actually resolves here — git
+// only ever consults ONE hooksPath location, and it is no longer this
+// repository's own hooks/ directory (issue #41). Nothing to check outside a
+// git repository; never fatal, since the developer may not even have relied
+// on it, but they deserve to know it stopped running.
+async function checkClassicHookShadowed(execFileFn) {
+  const gitDir = await getRepoGitDir(execFileFn);
+  if (!gitDir) return null;
+
+  const classicPath = join(gitDir, "hooks", PRE_COMMIT_FILE_NAME);
+  try {
+    const classicStat = await stat(classicPath);
+    if (!(classicStat.mode & 0o111)) return null; // present but not executable - git would never have run it either
+  } catch {
+    return null;
+  }
+
+  return {
+    status: "WARN",
+    label: "classic-hook-shadowed",
+    detail:
+      `${classicPath} is executable but dormant — GForge's global core.hooksPath means git no longer looks ` +
+      "in this repository's own hooks/ directory, for any hook type, not just pre-commit"
+  };
 }
 
 async function checkDirectory(hooksDirectory) {

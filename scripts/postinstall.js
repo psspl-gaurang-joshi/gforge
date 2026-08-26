@@ -15,6 +15,10 @@
 //   - Honor GFORGE_SKIP_POSTINSTALL as an explicit escape hatch.
 //   - Never silently clobber an existing, non-GForge global core.hooksPath; tell
 //     the user to run `gforge install` if they want GForge to take it over.
+//   - Same for a system-level core.hooksPath (e.g. org policy pushed via
+//     GIT_CONFIG_SYSTEM): global outranks system in git's real precedence, so
+//     writing a global value here would silently shadow it even though the
+//     system file itself is never touched (issue #41).
 
 import { homedir } from "node:os";
 import { pathToFileURL } from "node:url";
@@ -29,24 +33,42 @@ export function shouldRunPostinstall(env) {
   return true;
 }
 
+// What (if anything) already occupies the hooksPath GForge would otherwise
+// take over, described for the user - or null if it is safe to proceed.
+// Extracted for the same reason as shouldRunPostinstall: testable without
+// exercising real git calls.
+export function describeExistingHooksPath(currentGlobal, currentSystem, hooksDirectory) {
+  if (currentGlobal && currentGlobal !== hooksDirectory) {
+    return `a global core.hooksPath is already set (${currentGlobal})`;
+  }
+  if (!currentGlobal && currentSystem && currentSystem !== hooksDirectory) {
+    return `a system-level core.hooksPath is already set (${currentSystem})`;
+  }
+  return null;
+}
+
 async function main() {
   if (!shouldRunPostinstall(process.env)) return;
 
   const home = homedir();
   if (!home) return;
 
-  const { getGlobalHooksPath } = await import("../src/git-config.js");
+  const { getGlobalHooksPath, getSystemHooksPath } = await import("../src/git-config.js");
   const { resolveHooksDirectory } = await import("../src/hooks.js");
   const { installManagedHooks } = await import("../src/installer.js");
 
   const hooksDirectory = resolveHooksDirectory(home);
-  const current = await getGlobalHooksPath().catch(() => null);
+  const [current, currentSystem] = await Promise.all([
+    getGlobalHooksPath().catch(() => null),
+    getSystemHooksPath().catch(() => null)
+  ]);
 
-  if (current && current !== hooksDirectory) {
-    // Respect an existing custom global hooks path (e.g. a team setup); don't
-    // take it over during an npm install.
+  const existing = describeExistingHooksPath(current, currentSystem, hooksDirectory);
+  if (existing) {
+    // Respect an existing custom hooks path (e.g. a team setup); don't take
+    // it over during an npm install.
     process.stdout.write(
-      `gforge: a global core.hooksPath is already set (${current}).\n` +
+      `gforge: ${existing}.\n` +
       "        Run `gforge install` if you want GForge to manage it.\n"
     );
     return;
