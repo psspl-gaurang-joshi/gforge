@@ -211,16 +211,21 @@ const ROUTE_SEGMENT_MAX_LENGTH = 20; // real route words; secrets run longer
 // ("changepassword" is 0.286), while random lowercase letters sit near 0.19.
 const ROUTE_MIN_VOWEL_RATIO = 0.25;
 
-// A run of consecutive consonant LETTERS with no vowel/digit/hyphen to break
-// it up practically never occurs in a real English route word - even
-// consonant-heavy compounds top out around 5 ("healthcheck", "worldchampionship").
-// A uniformly random lowercase string long enough to pass the length gate
-// below hits 6+ the large majority of the time (verified empirically: ~83% of
-// random 20-char lowercase strings do, vs. 0% of a sample of real compound
-// route words), so this is a much sharper signal than vowel ratio alone,
-// which a "sizeable fraction" of random strings satisfy purely by chance
-// (issue #45).
-const ROUTE_MAX_CONSONANT_RUN = 5;
+// A long run of consecutive consonant LETTERS with no vowel/digit/hyphen to
+// break it up is a sharper signal than vowel ratio alone, which a sizeable
+// fraction of random lowercase strings satisfy purely by chance (issue #45).
+//
+// The threshold has to clear real route words, and 6-runs are NOT rare among
+// them: "encrypt", "xmlrpc", "rhythm", "nightschool" and "graphqlws" all score
+// exactly 6. Note "y" is not counted as a vowel here (encrypt -> n-c-r-y-p-t),
+// but adding it would not help — xmlrpc and graphqlws contain no "y" and still
+// score 6. So the bar is 7+, measured against a 290-word corpus of real route
+// segments: rejecting 7+ breaks NONE of them, while rejecting 6+ breaks four
+// that previously passed. Detection still improves substantially over having no
+// consonant check at all (~79% vs ~66% of random 20-char lowercase segments
+// caught by the segment check overall), and a genuine random secret long
+// enough to matter usually clears 7 (~70% at 20 characters).
+const ROUTE_MAX_CONSONANT_RUN = 6;
 function maxConsonantRun(word) {
   let max = 0;
   let run = 0;

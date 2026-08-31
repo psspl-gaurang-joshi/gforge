@@ -377,11 +377,16 @@ test("issue #45: an all-lowercase random secret after a route-template prefix is
   // A short (<8 char) segment is no longer a completely free pass regardless
   // of content: previously any lowercase segment under 8 chars was treated as
   // route-word-shaped with zero content check, so a short but unmistakably
-  // non-word consonant run ("xzpqrt", 6-in-a-row) rode along for free as soon
+  // non-word consonant run ("xzpqrtv", 7-in-a-row) rode along for free as soon
   // as the value also contained a genuine ":param" segment elsewhere.
-  assert.ok(ruleIds("r.ts", 'export const TOKEN = "resetpw/:id/xzpqrt";').includes(GENERIC_SECRET_RULE_ID));
-  // Real compound route words - including consonant-heavy ones - must still
-  // be exempt; this closes a real gap without regressing the legitimate case.
+  assert.ok(ruleIds("r.ts", 'export const TOKEN = "resetpw/:id/xzpqrtv";').includes(GENERIC_SECRET_RULE_ID));
+  // Real compound route words - including consonant-heavy ones - must still be
+  // exempt; this closes a real gap without regressing the legitimate case.
+  // "encrypt" is the boundary case that matters: it scores exactly 6 (y is not
+  // counted as a vowel, so n-c-r-y-p-t is a 6-run), as do "xmlrpc", "rhythm"
+  // and "nightschool" - so the consonant bar must sit above 6, not at it.
+  assert.equal(ruleIds("routes.ts", 'export const RESET_TOKEN = "api/:version/encrypt";').length, 0);
+  assert.equal(ruleIds("routes.ts", 'export const RPC_TOKEN = "api/:version/xmlrpc";').length, 0);
   assert.equal(ruleIds("routes.ts", 'export const HEALTH = "api/v1/healthcheck";').length, 0);
   assert.equal(ruleIds("routes.ts", 'export const SUB = "account/subscription";').length, 0);
 });
