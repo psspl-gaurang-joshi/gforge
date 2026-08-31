@@ -74,6 +74,78 @@ test("formats warnings without failing verification", () => {
   assert.match(formatVerificationReport(report), /WARN shell: not detected/);
 });
 
+test("issue #42: a blocking check fails the exit code even though its status is WARN", () => {
+  // The reported gap: `gforge verify && deploy` passed in a repository whose
+  // own core.hooksPath shadows the managed hooks - the WARN's own text says
+  // GForge will not run there, so a CI gate was treating a completely
+  // unprotected repository as verified/healthy.
+  const report = createVerificationReport(healthyEnvironment(), {
+    checks: [
+      { status: "PASS", label: "hooks-path", detail: "core.hooksPath is /home/example/.gforge/hooks" },
+      {
+        blocking: true,
+        status: "WARN",
+        label: "effective-hooks-path",
+        detail: "core.hooksPath resolves to /repo/.husky/_ here; ... GForge will not run in this repository"
+      }
+    ]
+  });
+
+  assert.equal(report.exitCode, 1);
+  // The reason is stated, so a non-zero exit is not inexplicable when every
+  // printed line reads PASS or WARN.
+  const output = formatVerificationReport(report);
+  assert.match(output, /Not protected: effective-hooks-path/);
+  assert.match(output, /scanning is not active/);
+});
+
+test("issue #42: informational WARNs still pass, so CI does not break on a missing .env", () => {
+  // The fix keys off an explicit `blocking` flag rather than "any WARN".
+  // Failing on every WARN would fail verification for repositories that simply
+  // have no .env file, or whose shell is unrecognised - neither is a
+  // protection gap, and both are common.
+  const noEnvFile = createVerificationReport(healthyEnvironment(), null, {
+    inRepo: true,
+    root: "/repo",
+    files: [],
+    secretCount: 0
+  });
+  assert.equal(noEnvFile.checks.some((check) => check.status === "WARN"), true);
+  assert.equal(noEnvFile.exitCode, 0);
+
+  const noSecrets = createVerificationReport(healthyEnvironment(), null, {
+    inRepo: true,
+    root: "/repo",
+    files: [".env"],
+    secretCount: 0
+  });
+  assert.equal(noSecrets.exitCode, 0);
+
+  // A classic hand-written hook going dormant means the user's OWN hook will
+  // not run - GForge itself is active, so this must not fail verification.
+  const classicDormant = createVerificationReport(healthyEnvironment(), {
+    checks: [
+      { status: "PASS", label: "hooks-path", detail: "configured" },
+      { status: "WARN", label: "classic-hook-shadowed", detail: "/r/.git/hooks/pre-commit is executable but dormant" }
+    ]
+  });
+  assert.equal(classicDormant.exitCode, 0);
+  // No "Not protected" banner when nothing is actually blocking.
+  assert.equal(/Not protected/.test(formatVerificationReport(classicDormant)), false);
+});
+
+test("issue #42: a FAIL still fails, and combines with blocking checks", () => {
+  const report = createVerificationReport({
+    platform: { name: "linux", arch: "x64", supported: true },
+    home: { path: "/home/example", present: true },
+    shell: { path: "/bin/bash", name: "bash", supported: true },
+    git: { available: false, rawVersion: null }
+  });
+
+  assert.equal(report.exitCode, 1);
+  assert.deepEqual(report.blocking, []);
+});
+
 function healthyEnvironment() {
   return {
     platform: { name: "linux", arch: "x64", supported: true },

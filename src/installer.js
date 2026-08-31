@@ -246,6 +246,12 @@ export async function verifyManagedHooks(options = {}) {
   const effectiveHooksPath = await safeGetEffectiveHooksPath(execFileFn);
   if (effectiveHooksPath && effectiveHooksPath !== hooksDirectory) {
     checks.push({
+      // Blocking: this is not advisory. Scanning is entirely inactive here, so
+      // `gforge verify` must not report success — a CI gate built on its exit
+      // code would otherwise treat an unprotected repository as healthy
+      // (issue #42). Contrast with classic-hook-shadowed below, which warns
+      // that the user's OWN legacy hook is dormant while GForge itself runs.
+      blocking: true,
       status: "WARN",
       label: "effective-hooks-path",
       detail: `core.hooksPath resolves to ${effectiveHooksPath} here; a repository-local or system override shadows the managed hooks, so GForge will not run in this repository`

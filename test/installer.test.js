@@ -386,6 +386,10 @@ test("verify warns when a repo-local hooks path shadows the managed hooks", asyn
   assert.ok(warning, "expected an effective-hooks-path check");
   assert.equal(warning.status, "WARN");
   assert.match(warning.detail, /\.husky/);
+  // issue #42: this check says GForge will not run here, so it must be marked
+  // blocking - that flag is what makes `gforge verify` exit non-zero instead
+  // of reporting an unprotected repository as healthy.
+  assert.equal(warning.blocking, true);
 });
 
 test("issue #40: uninstall aborts, and removes nothing, when the global gitconfig cannot be read", async () => {
