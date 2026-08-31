@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { chmod, mkdir, readFile, rename, rmdir, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -373,11 +374,30 @@ async function writeManagedFiles(hooksDirectory, nodePath) {
 
 // Write via a sibling temp file and rename into place so readers (a concurrent
 // git commit, or a crash mid-write) never observe a truncated or empty hook.
+//
+// The temp name must be unique per call. A fixed `${filePath}.gforge-tmp` meant
+// two concurrent installs — two terminals, or several packages triggering
+// postinstall at once in a monorepo — wrote to the SAME temp file and then both
+// renamed it: the result was byte-spliced from both writers, and whichever lost
+// the race got an uncaught ENOENT because the other had already renamed the
+// file away (issue #39). Reproduced at 60/60 iterations before this change.
+//
+// rename(2) is atomic and replaces the destination, so with distinct temp paths
+// concurrent writers are safe: each renames its own complete file and the last
+// one wins, rather than the two being interleaved.
 async function writeFileAtomic(filePath, content, mode) {
-  const tempPath = `${filePath}.gforge-tmp`;
-  await writeFile(tempPath, content, { mode });
-  await chmod(tempPath, mode);
-  await rename(tempPath, filePath);
+  // Keeps the .gforge-tmp suffix so leftover debris is still identifiable.
+  const tempPath = `${filePath}.${process.pid}-${randomUUID()}.gforge-tmp`;
+  try {
+    await writeFile(tempPath, content, { mode });
+    await chmod(tempPath, mode);
+    await rename(tempPath, filePath);
+  } catch (error) {
+    // Never leave a partial temp file behind on failure - it would otherwise
+    // accumulate silently in the user's ~/.gforge/hooks directory forever.
+    await unlink(tempPath).catch(() => {});
+    throw error;
+  }
 }
 
 async function removeManagedFiles(hooksDirectory, statePath) {
