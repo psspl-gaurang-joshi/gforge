@@ -12,6 +12,7 @@ import {
   entropyCandidates,
   formatReport,
   isDotenvFile,
+  isExpectedGitReadFailure,
   isHeuristicExemptPath,
   isEnvTemplate,
   loadDotenvSecrets,
@@ -674,6 +675,26 @@ test("does not flag trivial non-secret values (PASS=123)", () => {
 test("shannon entropy scores random strings above plain text", () => {
   assert.ok(shannonEntropy("Zx9Kq2mVbN7pLwR4tYaSdFgHjKl") > 4.2);
   assert.ok(shannonEntropy("aaaaaaaaaaaaaaaaaaaa") < 1);
+});
+
+test("issue #44: a normal git-show exit (not staged / submodule) is the only case treated as nothing-to-scan", () => {
+  // Empirically verified against real git: `git show :path` for a path that
+  // is not staged, and for a submodule/gitlink entry, both exit with a
+  // normal (non-zero) process status of 128 - no signal, no spawn-level
+  // error code.
+  assert.equal(isExpectedGitReadFailure({ status: 128 }), true);
+  assert.equal(isExpectedGitReadFailure({ status: 1 }), true);
+});
+
+test("issue #44: a genuine read failure (buffer overflow, spawn failure) is not mistaken for nothing-to-scan", () => {
+  // Empirically verified: when execFileSync's maxBuffer is exceeded, the
+  // child is killed by a signal and the thrown error has `status: null`
+  // with `code: 'ENOBUFS'` - not a normal process exit at all.
+  assert.equal(isExpectedGitReadFailure({ status: null, code: "ENOBUFS", signal: "SIGTERM" }), false);
+  // A spawn-level failure (missing binary, permissions) never reaches a
+  // process exit either.
+  assert.equal(isExpectedGitReadFailure({ status: undefined, code: "ENOENT" }), false);
+  assert.equal(isExpectedGitReadFailure(new Error("boom")), false);
 });
 
 // Materializes { "relative/path": "content" } under a fresh temp directory and
