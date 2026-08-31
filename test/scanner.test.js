@@ -387,6 +387,39 @@ test("issue #37: appending the literal secret to a credential-keyword identifier
   );
 });
 
+test("issue #68: vowel-poor real route words are still route templates", () => {
+  // The 25% vowel ratio is an English-word bar, and real route vocabulary sits
+  // under it: "graphqlws" (graphql-ws, a real library) carries 1 vowel in 9
+  // letters, "transcript" and "postgresql" 2 in 10, "playlists" 2 in 9.
+  assert.equal(ruleIds("routes.ts", 'export const WS_TOKEN = "api/:version/graphqlws";').length, 0);
+  assert.equal(ruleIds("routes.ts", 'export const KEY = "media/:id/transcript";').length, 0);
+  assert.equal(ruleIds("routes.ts", 'export const TOKEN = "users/:id/playlists";').length, 0);
+  assert.equal(ruleIds("routes.ts", 'export const AUTH = "webhooks/:id/callbacks";').length, 0);
+  assert.equal(ruleIds("routes.ts", 'export const SECRET = "db/:name/postgresql";').length, 0);
+});
+
+test("issue #68: a route prefix still does not launder a real secret", () => {
+  // The vowel ratio is unchanged for segments long enough to hold a credential,
+  // so raising the short-segment floor costs no detection at 12+ characters.
+  assert.ok(
+    ruleIds("r.ts", 'const token = "api/:version/qwrtplkjhgfdsazx";').includes(GENERIC_SECRET_RULE_ID)
+  );
+  // Exactly at the new floor: 12 characters is still checked, and 0 vowels fails.
+  assert.ok(
+    ruleIds("r.ts", 'const token = "api/:version/zxcvbnmlkjhg";').includes(GENERIC_SECRET_RULE_ID)
+  );
+  // Mixed case, hex and digit-heavy shapes never depended on the vowel ratio.
+  assert.ok(
+    ruleIds("r.ts", 'const token = "api/:version/aX9kQm2pLw8vRt4zNc";').includes(GENERIC_SECRET_RULE_ID)
+  );
+  assert.ok(
+    ruleIds("r.ts", 'const token = "api/:version/a3f9b2c8d1e4f7a2b9c3d8e1f4a7b2c9";').includes(GENERIC_SECRET_RULE_ID)
+  );
+  assert.ok(
+    ruleIds("r.ts", 'const token = "api/:version/p4ssw0rd1234";').includes(GENERIC_SECRET_RULE_ID)
+  );
+});
+
 test("inline gforge:allow suppresses a line", () => {
   assert.equal(ruleIds("a", "DB_PASS=psspl@443e # gforge:allow").length, 0);
   assert.equal(ruleIds("a", "DB_PASS=psspl@443e // gitleaks:allow").length, 0);
