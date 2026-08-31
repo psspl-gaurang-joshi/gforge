@@ -12,6 +12,7 @@ import {
   entropyCandidates,
   formatReport,
   isDotenvFile,
+  isExpectedGitReadFailure,
   isHeuristicExemptPath,
   isEnvTemplate,
   loadDotenvSecrets,
@@ -366,6 +367,31 @@ test("issue #23: the same shapes carrying a REAL credential are still blocked", 
   assert.ok(ruleIds("a.js", `const token = "abc123def456" // user's key`).includes(GENERIC_SECRET_RULE_ID));
 });
 
+test("issue #45: an all-lowercase random secret after a route-template prefix is still caught", () => {
+  // The exact reported gap: a long, all-lowercase random-looking segment used
+  // to pass the route-word check on vowel ratio alone (~35% here, comfortably
+  // over the 25% bar) even though it is not an English word - a long run of
+  // consecutive consonants ("nqwqdln") gives it away where vowel ratio alone
+  // could not.
+  const secret = "whoquiueaqmhonqwqdln";
+  assert.ok(ruleIds("r.ts", `export const TOKEN = "reset/:uuid/${secret}";`).includes(GENERIC_SECRET_RULE_ID));
+  // A short (<8 char) segment is no longer a completely free pass regardless
+  // of content: previously any lowercase segment under 8 chars was treated as
+  // route-word-shaped with zero content check, so a short but unmistakably
+  // non-word consonant run ("xzpqrtv", 7-in-a-row) rode along for free as soon
+  // as the value also contained a genuine ":param" segment elsewhere.
+  assert.ok(ruleIds("r.ts", 'export const TOKEN = "resetpw/:id/xzpqrtv";').includes(GENERIC_SECRET_RULE_ID));
+  // Real compound route words - including consonant-heavy ones - must still be
+  // exempt; this closes a real gap without regressing the legitimate case.
+  // "encrypt" is the boundary case that matters: it scores exactly 6 (y is not
+  // counted as a vowel, so n-c-r-y-p-t is a 6-run), as do "xmlrpc", "rhythm"
+  // and "nightschool" - so the consonant bar must sit above 6, not at it.
+  assert.equal(ruleIds("routes.ts", 'export const RESET_TOKEN = "api/:version/encrypt";').length, 0);
+  assert.equal(ruleIds("routes.ts", 'export const RPC_TOKEN = "api/:version/xmlrpc";').length, 0);
+  assert.equal(ruleIds("routes.ts", 'export const HEALTH = "api/v1/healthcheck";').length, 0);
+  assert.equal(ruleIds("routes.ts", 'export const SUB = "account/subscription";').length, 0);
+});
+
 test("issue #37: appending the literal secret to a credential-keyword identifier is not a self-referential label", () => {
   const secret = "hunter2!Real9";
   // Same secret, same shape as the legitimate self-label exemption (the value
@@ -682,6 +708,26 @@ test("does not flag trivial non-secret values (PASS=123)", () => {
 test("shannon entropy scores random strings above plain text", () => {
   assert.ok(shannonEntropy("Zx9Kq2mVbN7pLwR4tYaSdFgHjKl") > 4.2);
   assert.ok(shannonEntropy("aaaaaaaaaaaaaaaaaaaa") < 1);
+});
+
+test("issue #44: a normal git-show exit (not staged / submodule) is the only case treated as nothing-to-scan", () => {
+  // Empirically verified against real git: `git show :path` for a path that
+  // is not staged, and for a submodule/gitlink entry, both exit with a
+  // normal (non-zero) process status of 128 - no signal, no spawn-level
+  // error code.
+  assert.equal(isExpectedGitReadFailure({ status: 128 }), true);
+  assert.equal(isExpectedGitReadFailure({ status: 1 }), true);
+});
+
+test("issue #44: a genuine read failure (buffer overflow, spawn failure) is not mistaken for nothing-to-scan", () => {
+  // Empirically verified: when execFileSync's maxBuffer is exceeded, the
+  // child is killed by a signal and the thrown error has `status: null`
+  // with `code: 'ENOBUFS'` - not a normal process exit at all.
+  assert.equal(isExpectedGitReadFailure({ status: null, code: "ENOBUFS", signal: "SIGTERM" }), false);
+  // A spawn-level failure (missing binary, permissions) never reaches a
+  // process exit either.
+  assert.equal(isExpectedGitReadFailure({ status: undefined, code: "ENOENT" }), false);
+  assert.equal(isExpectedGitReadFailure(new Error("boom")), false);
 });
 
 // Materializes { "relative/path": "content" } under a fresh temp directory and

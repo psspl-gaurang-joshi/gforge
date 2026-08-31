@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -9,6 +9,7 @@ import {
   SCANNER_FILE_NAME,
   getScannerContent,
   resolveHooksDirectory,
+  resolveManagedDirectory,
   resolvePreCommitPath,
   resolveScannerPath,
   resolveStatePath
@@ -354,9 +355,55 @@ test("install leaves no temporary files behind", async () => {
     execFile: git.execFile
   });
 
-  await assert.rejects(stat(`${resolvePreCommitPath(homePath)}.gforge-tmp`), { code: "ENOENT" });
-  await assert.rejects(stat(`${resolveScannerPath(homePath)}.gforge-tmp`), { code: "ENOENT" });
-  await assert.rejects(stat(`${resolveStatePath(homePath)}.gforge-tmp`), { code: "ENOENT" });
+  // Scans for ANY leftover temp file rather than three hardcoded names. Temp
+  // names carry a pid and a uuid since issue #39, so asserting the absence of
+  // one fixed literal path would pass vacuously - that exact name is never
+  // created any more, whether or not debris was actually left behind.
+  const hooksDirectory = resolveHooksDirectory(homePath);
+  for (const directory of [hooksDirectory, resolveManagedDirectory(homePath)]) {
+    const leftover = (await readdir(directory)).filter((name) => name.includes("gforge-tmp"));
+    assert.deepEqual(leftover, [], `unexpected temp files in ${directory}`);
+  }
+});
+
+test("issue #39: concurrent installs cannot splice the managed files together", async () => {
+  // Two installs racing against the same home directory - two terminals, or
+  // several packages triggering postinstall at once in a monorepo. With a
+  // fixed temp path both wrote to the SAME temp file and then both renamed it,
+  // so the installed engine could end up byte-spliced from the two writers,
+  // and the loser of the rename race threw an uncaught ENOENT.
+  const homePath = await createTempHome();
+  const git = createGitConfigMock();
+  const environment = createEnvironment(homePath);
+
+  const results = await Promise.allSettled([
+    installManagedHooks({ environment, execFile: git.execFile }),
+    installManagedHooks({ environment, execFile: git.execFile })
+  ]);
+
+  // Neither install may crash - in particular not with ENOENT from rename().
+  for (const result of results) {
+    assert.equal(result.status, "fulfilled", `install rejected: ${result.reason?.code ?? result.reason}`);
+    assert.equal(result.value.ok, true);
+  }
+
+  // The decisive assertion: the engine on disk is byte-identical to the
+  // packaged source. A spliced file has the right length but wrong content,
+  // so a size check alone would not catch this.
+  assert.equal(await readFile(resolveScannerPath(homePath), "utf8"), getScannerContent());
+
+  // The hook shim must be intact and still executable.
+  const preCommit = await readFile(resolvePreCommitPath(homePath), "utf8");
+  assert.match(preCommit, new RegExp(SCANNER_FILE_NAME));
+  assert.equal(Boolean((await stat(resolvePreCommitPath(homePath))).mode & 0o111), true);
+
+  // The state file must be complete, parseable JSON - not a spliced fragment.
+  const state = JSON.parse(await readFile(resolveStatePath(homePath), "utf8"));
+  assert.equal(state.managedBy, "gforge");
+
+  // And no temp debris survives the race.
+  const leftover = (await readdir(resolveHooksDirectory(homePath))).filter((n) => n.includes("gforge-tmp"));
+  assert.deepEqual(leftover, []);
 });
 
 test("verify warns when a repo-local hooks path shadows the managed hooks", async () => {
@@ -386,6 +433,10 @@ test("verify warns when a repo-local hooks path shadows the managed hooks", asyn
   assert.ok(warning, "expected an effective-hooks-path check");
   assert.equal(warning.status, "WARN");
   assert.match(warning.detail, /\.husky/);
+  // issue #42: this check says GForge will not run here, so it must be marked
+  // blocking - that flag is what makes `gforge verify` exit non-zero instead
+  // of reporting an unprotected repository as healthy.
+  assert.equal(warning.blocking, true);
 });
 
 test("issue #40: uninstall aborts, and removes nothing, when the global gitconfig cannot be read", async () => {

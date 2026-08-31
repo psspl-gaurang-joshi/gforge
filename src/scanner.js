@@ -224,18 +224,52 @@ const ROUTE_MIN_VOWEL_RATIO = 0.25;
 // was near a coin flip (52-76%) anyway (issue #68).
 const ROUTE_SEGMENT_MIN_CHECK_LENGTH = 12;
 
+// A long run of consecutive consonant LETTERS with no vowel/digit/hyphen to
+// break it up is a sharper signal than vowel ratio alone, which a sizeable
+// fraction of random lowercase strings satisfy purely by chance (issue #45).
+//
+// The threshold has to clear real route words, and 6-runs are NOT rare among
+// them: "encrypt", "xmlrpc", "rhythm", "nightschool" and "graphqlws" all score
+// exactly 6. Note "y" is not counted as a vowel here (encrypt -> n-c-r-y-p-t),
+// but adding it would not help — xmlrpc and graphqlws contain no "y" and still
+// score 6. So the bar is 7+, measured against a 290-word corpus of real route
+// segments: rejecting 7+ breaks NONE of them, while rejecting 6+ breaks four
+// that previously passed. Detection still improves substantially over having no
+// consonant check at all (~79% vs ~66% of random 20-char lowercase segments
+// caught by the segment check overall), and a genuine random secret long
+// enough to matter usually clears 7 (~70% at 20 characters).
+const ROUTE_MAX_CONSONANT_RUN = 6;
+function maxConsonantRun(word) {
+  let max = 0;
+  let run = 0;
+  for (const ch of word) {
+    if (ch >= "a" && ch <= "z" && !"aeiou".includes(ch)) {
+      run += 1;
+      if (run > max) max = run;
+    } else {
+      run = 0;
+    }
+  }
+  return max;
+}
+
 // A route segment is a WORD, not a blob. Lowercase is not enough on its own: hex
 // beginning a-f ("a3f9b2c8…") and an all-lowercase token are lowercase too, and
 // entropy cannot separate them (24 random lowercase letters score under the 4.2
-// gate). Length, digit density, and vowel ratio can — so a secret cannot ride
-// into the allowlist behind a route prefix.
+// gate). Length, digit density, consonant runs, and vowel ratio can — so a
+// secret cannot ride into the allowlist behind a route prefix. The consonant-run
+// check applies even to short segments below the length gate: a genuinely
+// short secret is unlikely, but "shorter means automatically route-shaped,
+// no content check at all" is still a real gap otherwise (issue #45).
 function looksLikeRouteSegment(segment) {
   const word = segment.replace(/^:/, "");
   if (!ROUTE_SEGMENT_RE.test(word)) return false;
   if (word.length > ROUTE_SEGMENT_MAX_LENGTH) return false;
   const digits = (word.match(/[0-9]/g) || []).length;
   if (digits > PATH_SEGMENT_MAX_DIGITS && digits / word.length > PATH_SEGMENT_MAX_DIGIT_RATIO) return false;
+  if (maxConsonantRun(word) > ROUTE_MAX_CONSONANT_RUN) return false;
   if (word.length < ROUTE_SEGMENT_MIN_CHECK_LENGTH) return true; // api, v1, graphqlws
+  if (word.length < NAME_SEGMENT_MIN_CHECK_LENGTH) return true; // api, v1, uuid
   const letters = word.replace(/[^a-z]/g, "");
   return letters.length > 0 && ratioOf(letters, /[aeiou]/g) >= ROUTE_MIN_VOWEL_RATIO;
 }
@@ -678,11 +712,23 @@ export function decodeBlob(buf) {
   return buf.toString("latin1");
 }
 
+// `git show :path` exits with a normal (non-zero) process status for the two
+// genuinely expected failures — the path is not staged, or it is a
+// submodule/gitlink entry — so `error.status` is a real exit code in both
+// cases (verified empirically: 128 for each). Anything else — the process
+// killed by a signal (maxBuffer exceeded leaves `status: null`), a spawn
+// failure (missing binary, permissions) — is a real read failure, not
+// "nothing to scan here", and must not be treated the same way (issue #44).
+export function isExpectedGitReadFailure(error) {
+  return typeof error?.status === "number";
+}
+
 function stagedContent(filePath) {
   try {
     return decodeBlob(git(["show", `:${filePath}`]));
-  } catch {
-    return null; // submodule/gitlink or unreadable; nothing to scan.
+  } catch (error) {
+    if (isExpectedGitReadFailure(error)) return null; // submodule/gitlink or not staged.
+    throw error; // genuine read failure: fail closed rather than scan nothing.
   }
 }
 

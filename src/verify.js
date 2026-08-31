@@ -28,9 +28,22 @@ export function createVerificationReport(environment, managedHooksReport = null,
     ...dotenvChecks(dotenvReport)
   ];
 
+  // A WARN normally means "worth knowing, still protected" — an unsupported
+  // shell, or one scanner layer being inactive while the others run. But a
+  // check may also mark itself `blocking`, meaning scanning is not active at
+  // all. Those must fail the exit code: `gforge verify && deploy` previously
+  // passed in a repository whose own core.hooksPath shadows the managed hooks,
+  // where the WARN's own text says GForge will not run (issue #42).
+  //
+  // Deliberately keyed off an explicit flag rather than "any WARN": failing on
+  // every WARN would break CI for repositories that simply have no .env file,
+  // which is not a protection gap.
+  const blocking = allChecks.filter((check) => check.blocking);
+
   return {
     checks: allChecks,
-    exitCode: allChecks.some((check) => check.status === "FAIL") ? 1 : 0
+    blocking,
+    exitCode: allChecks.some((check) => check.status === "FAIL") || blocking.length > 0 ? 1 : 0
   };
 }
 
@@ -72,6 +85,15 @@ export function formatVerificationReport(report) {
 
   for (const check of report.checks) {
     lines.push(`${check.status} ${check.label}: ${check.detail}`);
+  }
+
+  // Without this, a non-zero exit driven by a WARN-status check reads as
+  // inexplicable: every line says PASS or WARN, yet the command failed.
+  if (report.blocking?.length) {
+    lines.push("");
+    lines.push(
+      `Not protected: ${report.blocking.map((check) => check.label).join(", ")} — secret scanning is not active here, so verification failed.`
+    );
   }
 
   return `${lines.join("\n")}\n`;
