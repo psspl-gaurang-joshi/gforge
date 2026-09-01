@@ -69,6 +69,31 @@ secrets. Confirm anytime with:
 gforge verify
 ```
 
+### If you install with `--ignore-scripts`
+
+`npm install --ignore-scripts` is a reasonable supply-chain precaution, and many
+CI pipelines and lockfile-strict setups enable it globally. It also skips
+GForge's `postinstall` step — which is the step that installs the git hooks.
+
+npm gives no indication that it skipped anything, so the result is the failure
+mode GForge exists to prevent: the `gforge` command is on your PATH and looks
+installed, but **no hook is registered and no commit is ever scanned**.
+
+If you use that flag, run the install step yourself afterwards:
+
+```bash
+npm install -g gforge --ignore-scripts
+gforge install     # registers the hooks that postinstall would have
+```
+
+`gforge verify` reports this state explicitly — it exits non-zero and names
+`not-installed` — so it is worth running once after any install, and worth
+wiring into CI if your pipeline relies on GForge:
+
+```bash
+gforge verify      # exit 0 only when scanning is actually active
+```
+
 ## Quick start
 
 ```bash
