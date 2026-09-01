@@ -1,3 +1,5 @@
+import { MIN_NODE_MAJOR } from "./environment.js";
+
 export function createVerificationReport(environment, managedHooksReport = null, dotenvReport = null) {
   const checks = [
     {
@@ -19,7 +21,8 @@ export function createVerificationReport(environment, managedHooksReport = null,
       status: environment.git.available ? "PASS" : "FAIL",
       label: "git",
       detail: environment.git.available ? environment.git.rawVersion : "git not found"
-    }
+    },
+    nodeCheck(environment.node)
   ];
 
   const allChecks = [
@@ -97,6 +100,32 @@ export function formatVerificationReport(report) {
   }
 
   return `${lines.join("\n")}\n`;
+}
+
+// The package declares engines.node, but npm only enforces that under
+// engine-strict - so gforge can be running right now on a Node it does not
+// support, with nothing saying so. Not marked `blocking`: unlike a shadowed
+// hooksPath, an old runtime does not prove scanning is inactive, it proves it
+// is untested. FAIL is still right, since the exit code should not call an
+// unsupported runtime healthy (issue #52).
+function nodeCheck(node) {
+  if (!node) {
+    return { status: "FAIL", label: "node", detail: "Node.js version not detected" };
+  }
+  if (node.supported) {
+    return { status: "PASS", label: "node", detail: `Node.js ${node.version}` };
+  }
+  // An unparseable version is not "below" the minimum, it is unreadable - say
+  // which one it actually is rather than implying a comparison that never ran.
+  const problem =
+    node.major === null
+      ? `could not read the Node.js version${node.version ? ` (got "${node.version}")` : ""}`
+      : `Node.js ${node.version} is below the required Node.js ${MIN_NODE_MAJOR}`;
+  return {
+    status: "FAIL",
+    label: "node",
+    detail: `${problem} - GForge is untested here and may fail in ways that look unrelated. Upgrade Node.`
+  };
 }
 
 function formatShell(shell) {
