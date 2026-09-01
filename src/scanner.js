@@ -83,7 +83,37 @@ export const PROVIDER_RULES = [
   { id: "stripe-secret-key", description: "Stripe secret/restricted key", regex: /\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\b/ },
   { id: "google-api-key", description: "Google API key", regex: /\bAIza[0-9A-Za-z_-]{35}\b/ },
   { id: "gcp-oauth-secret", description: "Google OAuth client secret", regex: /\bGOCSPX-[A-Za-z0-9_-]{20,}\b/ },
+  // An Azure Storage account key is a 512-bit key, so its base64 form is always
+  // 86 characters plus "==" padding. Anchoring on the literal AccountKey= makes
+  // this effectively false-positive free (issue #28).
+  {
+    id: "azure-storage-key",
+    description: "Azure Storage account key",
+    regex: /\bAccountKey=[A-Za-z0-9+/]{86}==/
+  },
+  // An Entra ID (Azure AD) client secret is 40 characters from a restricted
+  // alphabet and carries a "~" a few characters in. The length is matched
+  // exactly, via a lookahead, because that discipline is what keeps this off
+  // ordinary 40-character strings - a 40-hex SHA and a "~/..." home path both
+  // stay clear (issue #28).
+  {
+    id: "azure-entra-client-secret",
+    description: "Azure Entra ID (Azure AD) client secret",
+    regex: /(?<![A-Za-z0-9._~-])(?=[A-Za-z0-9._~-]{40}(?![A-Za-z0-9._~-]))[A-Za-z0-9._-]{2,8}~[A-Za-z0-9._~-]+/
+  },
   { id: "twilio-api-key", description: "Twilio API key/SID", regex: /\b(?:SK|AC)[0-9a-fA-F]{32}\b/ },
+  // A Vonage/Nexmo API secret is 16 alphanumerics with no prefix - far too
+  // generic to match on shape alone (a bare 16-character run occurs 130 times
+  // in this repository's own source). So both alternatives anchor on something
+  // Vonage-specific instead: the literal api_secret parameter, or the SDK's
+  // positional (8-char key, 16-char secret) constructor. The lookbehind rather
+  // than \b is deliberate, so the VONAGE_API_SECRET= env form still matches -
+  // \b does not fire between an underscore and a letter (issue #28).
+  {
+    id: "vonage-api-secret",
+    description: "Vonage/Nexmo API secret",
+    regex: /(?<![A-Za-z0-9])api_secret=[A-Za-z0-9]{16}(?![A-Za-z0-9])|new\s+Vonage\s*\(\s*["'][A-Za-z0-9]{8}["']\s*,\s*["'][A-Za-z0-9]{16}["']/i
+  },
   { id: "sendgrid-key", description: "SendGrid API key", regex: /\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}\b/ },
   { id: "mailgun-key", description: "Mailgun API key", regex: /\bkey-[0-9a-zA-Z]{32}\b/ },
   { id: "mailchimp-key", description: "Mailchimp API key", regex: /\b[0-9a-f]{32}-us[0-9]{1,2}\b/ },

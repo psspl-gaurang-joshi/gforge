@@ -110,6 +110,68 @@ test("detects provider tokens and private keys", () => {
   assert.ok(ruleIds("a", "-----BEGIN RSA PRIVATE KEY-----").includes("private-key"));
 });
 
+// A real Azure Storage account key is a 512-bit key, so base64 is always 86
+// characters plus "==" padding. This one decodes to readable filler text.
+const AZURE_ACCOUNT_KEY = "Z2ZvcmdlLWZha2UtYXp1cmUtc3RvcmFnZS1rZXktZm9yLXRlc3RzLWRvLW5vdC11c2UtMDAwMDAwMDAwMDAwMA==";
+const ENTRA_SECRET = "8Xy7Q~aBcDeFgHiJkLmNoPqRsTuVwXyZ012345aB"; // 40 chars, tilde early
+
+test("issue #28: detects Azure Storage, Entra ID and Vonage credentials by name", () => {
+  const connectionString = `DefaultEndpointsProtocol=https;AccountName=store;AccountKey=${AZURE_ACCOUNT_KEY};EndpointSuffix=core.windows.net`;
+  assert.ok(ruleIds("a.js", `const cs = "${connectionString}";`).includes("azure-storage-key"));
+  assert.ok(ruleIds(".env", `AZURE_STORAGE_CONNECTION_STRING=${connectionString}`).includes("azure-storage-key"));
+
+  assert.ok(ruleIds("a.js", `const s = "${ENTRA_SECRET}";`).includes("azure-entra-client-secret"));
+  // The point of a named rule: it does not depend on the variable being called
+  // something incriminating, which is how the generic layer is evaded.
+  assert.ok(ruleIds("a.js", `const cfg = { v: "${ENTRA_SECRET}" };`).includes("azure-entra-client-secret"));
+
+  // Vonage's own query-parameter form, and the SCREAMING_SNAKE env form.
+  assert.ok(
+    ruleIds("a.js", 'fetch("https://rest.nexmo.com/sms/json?api_key=a1b2c3d4&api_secret=aBcDeF1234567890");')
+      .includes("vonage-api-secret")
+  );
+  assert.ok(ruleIds(".env", "VONAGE_API_SECRET=aBcDeF1234567890").includes("vonage-api-secret"));
+  // The SDK's positional (key, secret) constructor carries no credential
+  // keyword at all, so nothing else in the pipeline catches it.
+  assert.ok(
+    ruleIds("a.js", 'const v = new Vonage("a1b2c3d4", "abcdefghijklmnop");').includes("vonage-api-secret")
+  );
+});
+
+test("issue #28: the new provider rules run where the heuristic layers are skipped", () => {
+  // This is what a named rule buys over generic/entropy. Documentation and
+  // generated output skip the two heuristic layers by design (issue #24), so
+  // before these rules an Azure key pasted into a README was missed entirely.
+  assert.ok(ruleIds("README.md", `AccountKey=${AZURE_ACCOUNT_KEY}`).includes("azure-storage-key"));
+  assert.ok(ruleIds("docs/setup.md", `client secret ${ENTRA_SECRET}`).includes("azure-entra-client-secret"));
+  assert.ok(
+    ruleIds("dist/bundle.js", 'new Vonage("a1b2c3d4", "abcdefghijklmnop")').includes("vonage-api-secret")
+  );
+});
+
+test("issue #28: the new rules stay off look-alike values", () => {
+  // Entra secrets are exactly 40 characters; that discipline is what keeps the
+  // rule off ordinary strings that happen to contain a tilde.
+  for (const length of [38, 39, 41, 50]) {
+    const nearMiss = `8Xy7Q~${"a".repeat(length - 6)}`;
+    assert.equal(ruleIds("a.js", `const s = "${nearMiss}";`).includes("azure-entra-client-secret"), false, `len ${length}`);
+  }
+  assert.equal(ruleIds("a.js", 'const p = "~/Library/Application Support/Code/User/x";').includes("azure-entra-client-secret"), false);
+  assert.equal(
+    ruleIds("a.js", 'const sha = "0123456789abcdef0123456789abcdef01234567";').includes("azure-entra-client-secret"),
+    false
+  );
+
+  // A bare 16-character run is far too common to flag on shape alone - it
+  // occurs over a hundred times in this repository's own source - so the
+  // Vonage rule anchors on something Vonage-specific instead.
+  assert.equal(ruleIds("a.js", "const id = 'a1b2c3d4e5f6g7h8';").includes("vonage-api-secret"), false);
+  // A reference is not a hardcoded secret.
+  assert.equal(ruleIds("a.js", "const u = `?api_secret=${process.env.VONAGE_SECRET}`;").includes("vonage-api-secret"), false);
+  // Truncated/short values are not account keys.
+  assert.equal(ruleIds("a.js", 'const k = "AccountKey=tooshort==";').includes("azure-storage-key"), false);
+});
+
 test("detects credentials embedded in a URL", () => {
   assert.ok(ruleIds("a", "postgres://user:supersecret@db:5432/app").includes("basic-auth-url"));
 });
