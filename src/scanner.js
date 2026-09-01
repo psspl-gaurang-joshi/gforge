@@ -269,7 +269,6 @@ function looksLikeRouteSegment(segment) {
   if (digits > PATH_SEGMENT_MAX_DIGITS && digits / word.length > PATH_SEGMENT_MAX_DIGIT_RATIO) return false;
   if (maxConsonantRun(word) > ROUTE_MAX_CONSONANT_RUN) return false;
   if (word.length < ROUTE_SEGMENT_MIN_CHECK_LENGTH) return true; // api, v1, graphqlws
-  if (word.length < NAME_SEGMENT_MIN_CHECK_LENGTH) return true; // api, v1, uuid
   const letters = word.replace(/[^a-z]/g, "");
   return letters.length > 0 && ratioOf(letters, /[aeiou]/g) >= ROUTE_MIN_VOWEL_RATIO;
 }
