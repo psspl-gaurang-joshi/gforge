@@ -210,6 +210,19 @@ const ROUTE_SEGMENT_MAX_LENGTH = 20; // real route words; secrets run longer
 // Below IDENTIFIER_MIN_VOWEL_RATIO because compound route words are vowel-poor
 // ("changepassword" is 0.286), while random lowercase letters sit near 0.19.
 const ROUTE_MIN_VOWEL_RATIO = 0.25;
+// The route layer needs its own floor rather than NAME_SEGMENT_MIN_CHECK_LENGTH
+// (8), which was picked for the entropy layer's path segments. Real route
+// vocabulary is vowel-poorer than the ratio admits at short lengths —
+// "graphqlws" is 0.111, "transcript" and "postgresql" 0.200, "playlists" and
+// "callbacks" 0.222 — so a 475-word route corpus lost 13 words to the gate.
+// Lowering the ratio is the wrong lever: over random lowercase segments placed
+// after a route prefix, 0.20 drops detection at every length (66% -> 45% at 20
+// characters) and STILL rejects "graphqlws"; so does a minimum-vowel-count rule.
+// Raising the floor to 12 clears 12 of the 13 words and leaves detection for
+// 12+ character segments exactly where it was (58-77%). What it gives up is an
+// all-lowercase 8-11 character secret inside a route template, where the ratio
+// was near a coin flip (52-76%) anyway (issue #68).
+const ROUTE_SEGMENT_MIN_CHECK_LENGTH = 12;
 
 // A long run of consecutive consonant LETTERS with no vowel/digit/hyphen to
 // break it up is a sharper signal than vowel ratio alone, which a sizeable
@@ -255,6 +268,7 @@ function looksLikeRouteSegment(segment) {
   const digits = (word.match(/[0-9]/g) || []).length;
   if (digits > PATH_SEGMENT_MAX_DIGITS && digits / word.length > PATH_SEGMENT_MAX_DIGIT_RATIO) return false;
   if (maxConsonantRun(word) > ROUTE_MAX_CONSONANT_RUN) return false;
+  if (word.length < ROUTE_SEGMENT_MIN_CHECK_LENGTH) return true; // api, v1, graphqlws
   if (word.length < NAME_SEGMENT_MIN_CHECK_LENGTH) return true; // api, v1, uuid
   const letters = word.replace(/[^a-z]/g, "");
   return letters.length > 0 && ratioOf(letters, /[aeiou]/g) >= ROUTE_MIN_VOWEL_RATIO;
