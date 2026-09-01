@@ -287,6 +287,56 @@ test("verify reports missing managed hooks", async () => {
   assert.equal(report.checks.some((check) => check.status === "FAIL"), true);
 });
 
+test("issue #53: an uninstalled GForge says so once, with the right remedy", async () => {
+  // The state `npm install --ignore-scripts` leaves behind: the package is on
+  // PATH but postinstall never ran, so no hook exists and nothing is scanned.
+  const homePath = await createTempHome();
+  const report = await verifyManagedHooks({
+    environment: createEnvironment(homePath),
+    execFile: createGitConfigMock().execFile
+  });
+
+  const notInstalled = report.checks.find((check) => check.label === "not-installed");
+  assert.ok(notInstalled, "expected a not-installed check");
+  assert.equal(notInstalled.status, "FAIL");
+  // Names the silent cause, and gives the remedy that actually applies.
+  assert.match(notInstalled.detail, /--ignore-scripts/);
+  assert.match(notInstalled.detail, /gforge install/);
+
+  // `gforge update` refreshes an existing install; it is the wrong advice for
+  // something that was never installed, and used to be what verify printed.
+  assert.equal(/gforge update/.test(report.checks.map((c) => c.detail).join("\n")), false);
+
+  // One root cause, not four cascading per-file failures for the same thing.
+  for (const label of [`${SCANNER_FILE_NAME}-content`, "pre-commit-content", "pre-commit-executable"]) {
+    assert.equal(report.checks.some((check) => check.label === label), false, `${label} should be suppressed`);
+  }
+});
+
+test("issue #53: an installed-but-broken GForge still gets the per-file checks", async () => {
+  // The suppression above must be scoped to "nothing installed at all" - once
+  // the hooks exist, a stale or tampered engine still has to be reported, and
+  // there `gforge update` IS the right remedy.
+  const homePath = await createTempHome();
+  const git = createGitConfigMock();
+
+  await installManagedHooks({
+    environment: createEnvironment(homePath),
+    execFile: git.execFile
+  });
+  await writeFile(resolveScannerPath(homePath), "// tampered\n");
+
+  const report = await verifyManagedHooks({
+    environment: createEnvironment(homePath),
+    execFile: git.execFile
+  });
+
+  assert.equal(report.checks.some((check) => check.label === "not-installed"), false);
+  const scannerCheck = report.checks.find((check) => check.label === `${SCANNER_FILE_NAME}-content`);
+  assert.equal(scannerCheck.status, "FAIL");
+  assert.match(scannerCheck.detail, /gforge update/);
+});
+
 test("installs both managed files and delegates the pre-commit shim to the scanner", async () => {
   const homePath = await createTempHome();
   const git = createGitConfigMock();

@@ -266,7 +266,28 @@ export async function verifyManagedHooks(options = {}) {
     if (classicHook) checks.push(classicHook);
   }
 
-  checks.push(await checkDirectory(hooksDirectory));
+  const directoryCheck = await checkDirectory(hooksDirectory);
+
+  // Nothing is installed at all. Running the per-file checks here produces four
+  // cascading FAILs for a single root cause, and one of them ("engine not found
+  // - run `gforge update`") gives actively wrong advice: update refreshes an
+  // existing install, it is not how you set one up. Say it once, correctly, and
+  // name the cause that produces this state silently - `npm install
+  // --ignore-scripts` skips the postinstall step that installs the hooks, so
+  // the package is on PATH while nothing is ever scanned (issue #53).
+  if (directoryCheck.missing) {
+    checks.push({
+      status: "FAIL",
+      label: "not-installed",
+      detail:
+        `no managed hooks at ${hooksDirectory} - GForge is not installed, so no commit is being scanned. ` +
+        "If it was installed with `npm install --ignore-scripts`, the postinstall step that installs the " +
+        "hooks never ran. Run `gforge install` to set them up."
+    });
+    return { hooksDirectory, checks };
+  }
+
+  checks.push(directoryCheck);
 
   const scannerPath = resolveScannerPath(environment.home.path);
   checks.push(await checkScannerContent(scannerPath));
@@ -549,6 +570,9 @@ async function checkDirectory(hooksDirectory) {
     };
   } catch {
     return {
+      // Distinguishes "nothing is installed" from "something is wrong with what
+      // is installed" - the two need different remedies (see issue #53).
+      missing: true,
       status: "FAIL",
       label: "hooks-directory",
       detail: `${hooksDirectory} not found`
