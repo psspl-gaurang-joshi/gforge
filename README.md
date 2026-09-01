@@ -32,8 +32,9 @@ so the standard is enforced by default, not by discipline.
   - **`.env` cross-reference** — blocks any staged file that hardcodes a real value
     from your git-ignored `.env` files (the classic "pasted a token out of `.env`"),
     including per-package `.env` files in a monorepo, not just the repo root.
-  - **Provider rules** — 25+ credential shapes: AWS, GitHub/GitLab, Google, Slack,
-    Stripe, Twilio, SendGrid, npm, PyPI, OpenAI/Anthropic, PEM private keys, JWTs,
+  - **Provider rules** — 25+ credential shapes: AWS, Azure (Storage keys and
+    Entra ID client secrets), GitHub/GitLab, Google, Slack, Stripe, Twilio,
+    Vonage, SendGrid, npm, PyPI, OpenAI/Anthropic, PEM private keys, JWTs,
     database URLs, and more.
   - **Generic secrets** — any credential keyword assigned to a hardcoded value
     (`DB_PASSWORD=…`, `password: "…"`, `api_key = "…"`).
