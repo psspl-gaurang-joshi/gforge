@@ -1100,18 +1100,61 @@ export function runPreCommit(write = (s) => process.stderr.write(s)) {
 }
 
 // ---------------------------------------------------------------------------
-// Update notification (never blocks or delays the commit).
+// Update notification and tiered auto-update (never blocks or delays a commit).
 //
 // The commit path only READS a cache written by a detached background check, so
-// no network happens on the critical path. Once/day the hook fire-and-forgets a
-// background refresh of that cache; with GFORGE_AUTO_UPDATE=1 the background
-// process also upgrades the package.
+// no network happens on the critical path. Once a day the hook fire-and-forgets
+// a background refresh of that cache, and that background process is also what
+// installs an update.
+//
+// Auto-update is ON by default, because a stale scanner is its own security
+// problem - this project ships detection fixes continuously. The blast radius of
+// a compromised publish is bounded by a quarantine window instead, per tier
+// (issue #29):
+//
+//   patch  48h,     always on - this is where security fixes to GForge ship
+//   minor  7 days,  user-disableable
+//   major  30 days AND tagged `lts`, user-disableable
+//
+// Semver is a claim made by the *publisher*, and in this threat model the
+// publisher is the compromised party - a hostile release would be published as a
+// patch, precisely because that tier moves fastest. So the patch tier gets a
+// real (if short) window rather than zero: long enough for a bad release to be
+// noticed and yanked, short enough that a genuine fix still lands the same week.
 // ---------------------------------------------------------------------------
 const UPDATE_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
-const REGISTRY_URL = "https://registry.npmjs.org/gforge/latest";
+// The full packument, not /gforge/latest: only this response carries the `time`
+// map of publish timestamps that quarantine needs, and the `dist-tags` the LTS
+// rule needs. Measured at ~33KB vs ~1KB, fetched at most once a day off the
+// commit path, so the extra bytes buy both signals for free.
+const REGISTRY_URL = "https://registry.npmjs.org/gforge";
+
+export const QUARANTINE_MS = {
+  patch: 48 * 60 * 60 * 1000,
+  minor: 7 * 24 * 60 * 60 * 1000,
+  major: 30 * 24 * 60 * 60 * 1000
+};
 
 function updateCachePath() {
   return join(homedir(), ".gforge", "update-check.json");
+}
+
+function updateLogPath() {
+  return join(homedir(), ".gforge", "update-log");
+}
+
+export function settingsPath(home = homedir()) {
+  // Deliberately NOT state.json: installManagedHooks rewrites that on every
+  // update, so a preference stored there would be wiped by the very auto-update
+  // it governs (issue #29).
+  return join(home, ".gforge", "settings.json");
+}
+
+// Plain release versions only. A prerelease or build-tagged version is never an
+// auto-update target - those are opt-in by definition.
+export function parseVersion(value) {
+  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(String(value ?? "").trim());
+  return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null;
 }
 
 function versionIsNewer(latest, current) {
@@ -1124,9 +1167,158 @@ function versionIsNewer(latest, current) {
   return false;
 }
 
-// Reads the cached latest version, prints a one-line notice if newer, and once a
-// day fire-and-forgets a background refresh. Fully best-effort — any failure is
-// swallowed so it can never affect the commit.
+// Which tier an upgrade falls into, by the literal semver field that moved.
+// Returns null when `to` is not a plain-release upgrade of `from`.
+//
+// Note the pre-1.0 consequence: at 0.x a semantically breaking 0.3.x -> 0.4.0
+// reads as a minor, so it sits in the 7-day tier rather than the 30-day one.
+// That resolves itself at 1.0.
+export function classifyVersionBump(from, to) {
+  const a = parseVersion(from);
+  const b = parseVersion(to);
+  if (!a || !b) return null;
+  if (!(b[0] > a[0] || (b[0] === a[0] && (b[1] > a[1] || (b[1] === a[1] && b[2] > a[2]))))) return null;
+  if (b[0] !== a[0]) return "major";
+  if (b[1] !== a[1]) return "minor";
+  return "patch";
+}
+
+const AFFIRMATIVE = new Set(["1", "true", "on", "yes"]);
+
+// Resolves whether the minor and major tiers are enabled. Patch is not
+// representable here on purpose: it is always on.
+//
+// The env var is treated as OFF unless it is explicitly affirmative. It used to
+// be the reverse - only 0/false/off/no disabled it - which meant
+// GFORGE_AUTO_UPDATE=disabled, =never or =2 all silently kept auto-installing
+// (issue #29). Anything that is not clearly "yes" now means no.
+export function resolveAutoUpdateSettings({ fileContent = null, env = {} } = {}) {
+  const raw = env.GFORGE_AUTO_UPDATE;
+  if (raw !== undefined && String(raw).trim() !== "") {
+    const on = AFFIRMATIVE.has(String(raw).trim().toLowerCase());
+    return { minor: on, major: on, source: "env" };
+  }
+
+  let parsed = null;
+  try {
+    parsed = fileContent ? JSON.parse(fileContent) : null;
+  } catch {
+    parsed = null; // unreadable settings fall back to the defaults
+  }
+  const autoUpdate = parsed && typeof parsed.autoUpdate === "object" ? parsed.autoUpdate : {};
+  return {
+    minor: autoUpdate.minor !== false,
+    major: autoUpdate.major !== false,
+    source: parsed ? "settings" : "default"
+  };
+}
+
+// How long a published version has been public, clamped at zero so a machine
+// with a clock set behind the registry cannot report a negative age and a clock
+// set forward cannot be used to fast-forward past a quarantine window.
+export function versionAgeMs(publishedAt, now) {
+  const published = Date.parse(String(publishedAt ?? ""));
+  if (!Number.isFinite(published)) return null;
+  return Math.max(0, now - published);
+}
+
+// Picks the version to install, or null when nothing is eligible yet.
+//
+// Within the current major it walks candidates newest-first and takes the first
+// one whose tier is enabled AND whose quarantine has elapsed - so a brand new
+// patch does not stall an older patch that has already matured.
+//
+// Crossing a major happens only via the `lts` dist-tag, and only after the
+// 30-day window. Without an `lts` tag no major ever auto-installs, which is
+// fail-safe but does make publishing that tag a release-process obligation.
+export function selectAutoUpdateTarget({ current, versions = [], distTags = {}, time = {}, now, settings }) {
+  const from = parseVersion(current);
+  if (!from) return null;
+
+  const eligible = (version) => {
+    const tier = classifyVersionBump(current, version);
+    if (!tier) return null;
+    if (tier !== "patch" && !settings[tier]) return null;
+    const age = versionAgeMs(time[version], now);
+    if (age === null || age < QUARANTINE_MS[tier]) return null;
+    return tier;
+  };
+
+  // Same-major candidates: patch and minor tiers.
+  const sameMajor = versions
+    .filter((v) => {
+      const parsed = parseVersion(v);
+      return parsed && parsed[0] === from[0];
+    })
+    .sort((a, b) => (versionIsNewer(a, b) ? -1 : 1));
+
+  let best = null;
+  for (const version of sameMajor) {
+    const tier = eligible(version);
+    if (tier) {
+      best = { version, tier };
+      break;
+    }
+  }
+
+  // A blessed major supersedes, since it is by definition the newer line.
+  const lts = distTags.lts;
+  if (lts && parseVersion(lts) && parseVersion(lts)[0] > from[0]) {
+    const tier = eligible(lts);
+    if (tier === "major") best = { version: lts, tier };
+  }
+
+  return best;
+}
+
+// What the commit path should say about a major it is NOT going to install
+// itself. A notice appears either way so a new major is never invisible; only
+// the emphasis differs, and it must not rely on colour alone (NO_COLOR, CI and
+// pipes all have to carry the distinction) - hence different wording too.
+export function describeMajorNotice({ current, distTags = {}, versions = [], settings }) {
+  const from = parseVersion(current);
+  if (!from) return null;
+
+  const newestMajor = versions
+    .filter((v) => {
+      const parsed = parseVersion(v);
+      return parsed && parsed[0] > from[0];
+    })
+    .sort((a, b) => (versionIsNewer(a, b) ? -1 : 1))[0];
+  if (!newestMajor) return null;
+
+  const lts = distTags.lts;
+  const ltsParsed = lts ? parseVersion(lts) : null;
+  const isLts = Boolean(ltsParsed && ltsParsed[0] > from[0]);
+  const version = isLts ? lts : newestMajor;
+  const willAutoInstall = isLts && settings.major;
+
+  return {
+    version,
+    isLts,
+    highlight: isLts,
+    text: isLts
+      ? `!! gforge v${version} is a new LTS major (you have v${current}).` +
+        (willAutoInstall
+          ? " It installs automatically once it has been published 30 days; run `gforge update` to take it now."
+          : " Auto-update is off for majors, so run `gforge update` to take it.")
+      : `gforge v${version} is a new major (you have v${current}). It is not marked LTS, so it will not install automatically. Run \`gforge update\` to take it.`
+  };
+}
+
+function readSettingsFile() {
+  try {
+    return readFileSync(settingsPath(), "utf8");
+  } catch {
+    return null;
+  }
+}
+
+// Reads the cache written by the background check and prints what the developer
+// needs to know: a major that will not install itself, and any unattended
+// install that has already happened. Then, once a day, fire-and-forgets a
+// refresh. Fully best-effort - any failure is swallowed so it can never affect
+// the commit.
 function maybeUpdateNotice(write) {
   try {
     let cache = null;
@@ -1135,9 +1327,36 @@ function maybeUpdateNotice(write) {
     } catch {
       cache = null;
     }
+    const known = RUNNING_VERSION[0] !== "_";
 
-    if (cache && cache.latest && RUNNING_VERSION[0] !== "_" && versionIsNewer(cache.latest, RUNNING_VERSION)) {
-      write(`\ngforge: v${cache.latest} is available (you have v${RUNNING_VERSION}). Run: gforge update\n`);
+    // An unattended install already ran. Announce it once - a mandatory update
+    // channel that leaves no trace is not acceptable for a security tool.
+    if (known && cache?.installed && cache.installed.to === RUNNING_VERSION && !cache.installed.announced) {
+      write(`\ngforge: auto-updated v${cache.installed.from} -> v${cache.installed.to}.\n`);
+      try {
+        cache.installed.announced = true;
+        writeFileSync(updateCachePath(), `${JSON.stringify(cache)}\n`);
+      } catch {
+        // At worst the notice repeats; never worth failing a commit over.
+      }
+    }
+
+    if (known && cache) {
+      const settings = resolveAutoUpdateSettings({ fileContent: readSettingsFile(), env: process.env });
+      const major = describeMajorNotice({
+        current: RUNNING_VERSION,
+        distTags: cache.distTags ?? {},
+        versions: cache.versions ?? [],
+        settings
+      });
+      if (major) {
+        const c = makePalette(colorEnabled(process.stderr));
+        write(`\n${major.highlight ? c.redBold(major.text) : major.text}\n`);
+      } else if (cache.latest && versionIsNewer(cache.latest, RUNNING_VERSION)) {
+        // Same-major update pending (still inside its quarantine window, or the
+        // tier is switched off).
+        write(`\ngforge: v${cache.latest} is available (you have v${RUNNING_VERSION}). Run: gforge update\n`);
+      }
     }
 
     const stale = !cache || (Date.now() - (cache.checkedAt || 0)) > UPDATE_CACHE_TTL_MS;
@@ -1154,49 +1373,97 @@ function maybeUpdateNotice(write) {
   }
 }
 
-// Background worker: refresh the cache and (opt-in) auto-upgrade. Detached from
-// the commit, so it may take its time.
+function appendUpdateLog(line) {
+  try {
+    // Capped by rewriting the tail: this file is advisory, so bounding it
+    // matters more than preserving every historical entry.
+    let previous = "";
+    try {
+      previous = readFileSync(updateLogPath(), "utf8");
+    } catch {
+      previous = "";
+    }
+    const kept = `${previous}${line}\n`.split("\n").slice(-200).join("\n");
+    writeFileSync(updateLogPath(), kept);
+  } catch {
+    // ignore
+  }
+}
+
+// Background worker: refresh the cache and install whatever tier is eligible.
+// Detached from the commit, so it may take its time.
 async function runUpdateCheck() {
-  const cachePath = updateCachePath();
-  let latest = null;
+  let packument = null;
   try {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 6000);
+    const timer = setTimeout(() => controller.abort(), 10000);
     try {
       const response = await fetch(REGISTRY_URL, { signal: controller.signal });
-      if (response.ok) {
-        const body = await response.json();
-        if (body && /^\d+\.\d+\.\d+/.test(String(body.version || ""))) latest = body.version;
-      }
+      if (response.ok) packument = await response.json();
     } finally {
       clearTimeout(timer);
     }
   } catch {
-    latest = null;
+    packument = null;
   }
+
+  const distTags = packument?.["dist-tags"] ?? {};
+  const time = packument?.time ?? {};
+  const versions = Object.keys(packument?.versions ?? {}).filter((v) => parseVersion(v));
+  const latest = parseVersion(distTags.latest) ? distTags.latest : null;
 
   try {
     // Always stamp checkedAt so a failed check still waits a day before retrying.
-    writeFileSync(cachePath, `${JSON.stringify({ checkedAt: Date.now(), latest: latest ?? null })}\n`);
+    writeFileSync(
+      updateCachePath(),
+      `${JSON.stringify({ checkedAt: Date.now(), latest, distTags, versions })}\n`
+    );
   } catch {
     // ignore
   }
 
-  // Auto-install is ON by default; opt out with GFORGE_AUTO_UPDATE=0/false/off/no.
-  const optOut = ["0", "false", "off", "no"].includes(String(process.env.GFORGE_AUTO_UPDATE || "").toLowerCase());
-  const safeVersion = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(String(latest || ""));
-  if (latest && safeVersion && !optOut && RUNNING_VERSION[0] !== "_" && versionIsNewer(latest, RUNNING_VERSION)) {
-    try {
-      // Install target is the constant gforge@latest (== the version we just
-      // detected); nothing registry-derived is interpolated into the command.
-      const npm = spawn("npm", ["install", "-g", "gforge@latest"], {
-        stdio: "ignore",
-        shell: process.platform === "win32"
-      });
-      await new Promise((resolve) => npm.on("close", resolve).on("error", resolve));
-    } catch {
-      // ignore; the notice will still prompt a manual `gforge update`.
+  if (RUNNING_VERSION[0] === "_" || !packument) return;
+
+  const settings = resolveAutoUpdateSettings({ fileContent: readSettingsFile(), env: process.env });
+  const target = selectAutoUpdateTarget({
+    current: RUNNING_VERSION,
+    versions,
+    distTags,
+    time,
+    now: Date.now(),
+    settings
+  });
+  if (!target) return;
+
+  // The install target is now a specific registry-derived version rather than
+  // the constant gforge@latest: a user on 1.5.2 taking a patch must get 1.5.3,
+  // not `latest`, or a patch would silently carry them across a major boundary
+  // and the whole gate would be meaningless. So this string MUST be validated
+  // before it reaches spawn - hence the hard re-check rather than trusting the
+  // selection above (issue #29).
+  if (!parseVersion(target.version)) return;
+
+  try {
+    const npm = spawn("npm", ["install", "-g", `gforge@${target.version}`], {
+      stdio: "ignore",
+      shell: process.platform === "win32"
+    });
+    const code = await new Promise((resolve) => npm.on("close", resolve).on("error", () => resolve(-1)));
+    const stamp = new Date().toISOString();
+    appendUpdateLog(
+      `${stamp} ${code === 0 ? "installed" : `failed(exit=${code})`} ${target.tier} ${RUNNING_VERSION} -> ${target.version}`
+    );
+    if (code === 0) {
+      try {
+        const cache = JSON.parse(readFileSync(updateCachePath(), "utf8"));
+        cache.installed = { from: RUNNING_VERSION, to: target.version, at: Date.now(), tier: target.tier };
+        writeFileSync(updateCachePath(), `${JSON.stringify(cache)}\n`);
+      } catch {
+        // ignore
+      }
     }
+  } catch {
+    appendUpdateLog(`${new Date().toISOString()} error ${target.tier} ${RUNNING_VERSION} -> ${target.version}`);
   }
 }
 
