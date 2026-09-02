@@ -7,6 +7,29 @@ const execFileAsync = promisify(execFile);
 const SUPPORTED_PLATFORMS = new Set(["darwin", "linux", "win32"]);
 const SUPPORTED_SHELLS = new Set(["bash", "zsh", "pwsh", "powershell"]);
 
+// Mirrors `engines.node` in package.json. Kept as a literal rather than parsed
+// from package.json at runtime so detection stays dependency- and I/O-free;
+// a test asserts the two never drift apart (issue #52).
+export const MIN_NODE_MAJOR = 20;
+
+// npm only enforces `engines` when engine-strict is on, so gforge can be
+// installed and run on an older Node than it supports. Nothing then reports
+// that, and the first symptom is an unrelated-looking runtime error somewhere
+// else in the tool - so detect it and let verify say so plainly (issue #52).
+export function detectNode(rawVersion = process.versions.node) {
+  const version = String(rawVersion ?? "").trim() || null;
+  const match = version?.match(/^v?(\d+)\./);
+  const major = match ? Number(match[1]) : null;
+
+  return {
+    version,
+    major,
+    // Unparseable fails closed (treated as unsupported) rather than assuming
+    // support, matching how the git-version gate handles the same ambiguity.
+    supported: major !== null && major >= MIN_NODE_MAJOR
+  };
+}
+
 export async function detectEnvironment(options = {}) {
   const env = options.env ?? process.env;
   const platform = options.platform ?? process.platform;
@@ -32,6 +55,7 @@ export async function detectEnvironment(options = {}) {
       name: shellName,
       supported: shellName ? SUPPORTED_SHELLS.has(shellName) : false
     },
+    node: detectNode(options.nodeVersion ?? process.versions.node),
     git: await detectGit(execFileFn)
   };
 }

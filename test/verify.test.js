@@ -9,6 +9,7 @@ test("creates successful report when required checks pass", () => {
       platform: { name: "linux", arch: "x64", supported: true },
       home: { path: "/home/example", present: true },
       shell: { path: "/bin/bash", name: "bash", supported: true },
+      node: { version: "20.11.0", major: 20, supported: true },
       git: { available: true, rawVersion: "git version 2.45.0" }
     },
     {
@@ -67,6 +68,7 @@ test("formats warnings without failing verification", () => {
     platform: { name: "linux", arch: "x64", supported: true },
     home: { path: "/home/example", present: true },
     shell: { path: null, name: null, supported: false },
+    node: { version: "20.11.0", major: 20, supported: true },
     git: { available: true, rawVersion: "git version 2.45.0" }
   });
 
@@ -139,6 +141,7 @@ test("issue #42: a FAIL still fails, and combines with blocking checks", () => {
     platform: { name: "linux", arch: "x64", supported: true },
     home: { path: "/home/example", present: true },
     shell: { path: "/bin/bash", name: "bash", supported: true },
+    node: { version: "20.11.0", major: 20, supported: true },
     git: { available: false, rawVersion: null }
   });
 
@@ -146,11 +149,47 @@ test("issue #42: a FAIL still fails, and combines with blocking checks", () => {
   assert.deepEqual(report.blocking, []);
 });
 
+test("issue #52: verify reports the Node version, and fails on one below the minimum", () => {
+  const healthy = createVerificationReport(healthyEnvironment());
+  const nodePass = healthy.checks.find((check) => check.label === "node");
+  assert.ok(nodePass, "expected a node check");
+  assert.equal(nodePass.status, "PASS");
+  assert.match(formatVerificationReport(healthy), /PASS node: Node\.js 20\.11\.0/);
+
+  const old = createVerificationReport({
+    ...healthyEnvironment(),
+    node: { version: "18.20.4", major: 18, supported: false }
+  });
+  const nodeFail = old.checks.find((check) => check.label === "node");
+  assert.equal(nodeFail.status, "FAIL");
+  assert.match(nodeFail.detail, /18\.20\.4/);
+  assert.match(nodeFail.detail, /Upgrade Node/);
+  assert.equal(old.exitCode, 1);
+
+  // A FAIL, not a blocking check: an old runtime is untested, but it does not
+  // prove that scanning is inactive the way a shadowed hooksPath does - so the
+  // "Not protected" banner must not appear.
+  assert.deepEqual(old.blocking, []);
+  assert.equal(/Not protected/.test(formatVerificationReport(old)), false);
+});
+
+test("issue #52: a missing node field is reported rather than silently passing", () => {
+  // Defensive: an environment object assembled without node detection must not
+  // quietly count as healthy.
+  const { node, ...withoutNode } = healthyEnvironment();
+  const report = createVerificationReport(withoutNode);
+
+  const check = report.checks.find((c) => c.label === "node");
+  assert.equal(check.status, "FAIL");
+  assert.equal(report.exitCode, 1);
+});
+
 function healthyEnvironment() {
   return {
     platform: { name: "linux", arch: "x64", supported: true },
     home: { path: "/home/example", present: true },
     shell: { path: "/bin/bash", name: "bash", supported: true },
+    node: { version: "20.11.0", major: 20, supported: true },
     git: { available: true, rawVersion: "git version 2.45.0" }
   };
 }

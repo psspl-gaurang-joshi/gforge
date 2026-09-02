@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { detectEnvironment } from "../src/environment.js";
+import { MIN_NODE_MAJOR, detectEnvironment, detectNode } from "../src/environment.js";
 
 test("detects supported Unix environment and Git", async () => {
   const environment = await detectEnvironment({
@@ -75,4 +76,60 @@ test("reports missing Git without throwing", async () => {
 
   assert.equal(environment.git.available, false);
   assert.equal(environment.git.errorCode, "ENOENT");
+});
+
+test("issue #52: detects the running Node.js version and whether it is supported", async () => {
+  const environment = await detectEnvironment({
+    env: { SHELL: "/bin/zsh" },
+    platform: "linux",
+    arch: "x64",
+    homeDirectory: "/home/example",
+    nodeVersion: "22.14.0",
+    execFile: async () => ({ stdout: "git version 2.45.0\n" })
+  });
+
+  assert.deepEqual(environment.node, { version: "22.14.0", major: 22, supported: true });
+});
+
+test("issue #52: a Node below the declared minimum is reported unsupported", () => {
+  assert.equal(detectNode("18.20.4").supported, false);
+  assert.equal(detectNode("18.20.4").major, 18);
+  // Boundary: the declared minimum itself is supported.
+  assert.equal(detectNode(`${MIN_NODE_MAJOR}.0.0`).supported, true);
+  assert.equal(detectNode(`${MIN_NODE_MAJOR - 1}.99.99`).supported, false);
+  // A leading "v" is tolerated (process.versions.node omits it, but
+  // `node --version` and most other sources include it).
+  assert.equal(detectNode("v22.0.0").supported, true);
+});
+
+test("issue #52: an undetectable Node version fails closed, not open", () => {
+  // Matches how the git-version gate treats an unparseable version: assume
+  // unsupported rather than quietly assuming it is fine. Note a bare major
+  // ("20") is deliberately in here - the pattern requires a dotted version, so
+  // anything that shape is treated as unrecognised rather than guessed at.
+  for (const bogus of ["", "   ", null, "not-a-version", "20"]) {
+    assert.equal(detectNode(bogus).supported, false, `expected ${JSON.stringify(bogus)} unsupported`);
+    assert.equal(detectNode(bogus).major, null);
+  }
+});
+
+test("issue #52: calling detectNode with no argument reads the running Node", () => {
+  // `undefined` is NOT a fail-closed case - it means "use the default", which
+  // is the whole point of the parameter. The process running this test meets
+  // the minimum, so this must report supported.
+  assert.deepEqual(detectNode(), detectNode(process.versions.node));
+  assert.equal(detectNode().version, process.versions.node);
+  assert.equal(detectNode().supported, true);
+});
+
+test("issue #52: MIN_NODE_MAJOR stays in sync with package.json engines.node", async () => {
+  // The constant is a literal so detection needs no file I/O; this guards the
+  // drift that choice invites.
+  const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+  const declared = Number(String(pkg.engines.node).match(/(\d+)/)?.[1]);
+  assert.equal(
+    MIN_NODE_MAJOR,
+    declared,
+    `MIN_NODE_MAJOR (${MIN_NODE_MAJOR}) must match package.json engines.node (${pkg.engines.node})`
+  );
 });

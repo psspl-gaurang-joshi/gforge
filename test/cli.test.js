@@ -78,6 +78,7 @@ test("runs read-only verification", async () => {
       platform: { name: "darwin", arch: "arm64", supported: true, isWsl: false },
       home: { path: "/Users/example", present: true },
       shell: { path: "/bin/zsh", name: "zsh", supported: true },
+      node: { version: "20.11.0", major: 20, supported: true },
       git: { available: true, version: "2.45.0", rawVersion: "git version 2.45.0" }
     }),
     verifyManagedHooks: async () => ({
@@ -107,6 +108,7 @@ test("fails verification when git is unavailable", async () => {
       platform: { name: "darwin", arch: "arm64", supported: true, isWsl: false },
       home: { path: "/Users/example", present: true },
       shell: { path: "/bin/zsh", name: "zsh", supported: true },
+      node: { version: "20.11.0", major: 20, supported: true },
       git: { available: false, version: null, rawVersion: null, errorCode: "ENOENT" }
     }),
     verifyManagedHooks: async () => ({
